@@ -507,6 +507,11 @@ class XThread : public XObject, public cpu::Thread {
     kDelay,
     kFence,
     kIoOffload,
+    // A cooperative socket op retrying at would_block. Not gated on anything,
+    // so a peer that never answers parks here at the poll cadence forever -
+    // naming it is the only way the no-progress dump can tell that apart from
+    // a thread that is merely idle.
+    kSocket,
   };
   // Records the wait shape for diagnostics. Extra handles beyond the array are
   // dropped; the count reported is the real one so truncation stays visible.

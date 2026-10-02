@@ -444,6 +444,12 @@ void XSocket::RunCooperatively(asio::error_code& ec, RetryMode mode,
     SetHostNonBlocking(true);
   }
   auto* scheduler = self->kernel_state()->guest_scheduler();
+  // Name the park for the no-progress dump. A connect or a recv with no
+  // SO_SNDTIMEO retries until the peer answers or never, and with nothing
+  // gated the fiber looks identical to an idle one in the dump - which is how
+  // the titles that "hang on a blocking recvfrom" read as a scheduler bug.
+  self->set_cooperative_wait_shape(XThread::CooperativeWaitKind::kSocket,
+                                   nullptr, 0);
   while (true) {
     attempt();
     bool retry = ec == asio::error::would_block || ec == asio::error::try_again;
@@ -466,6 +472,7 @@ void XSocket::RunCooperatively(asio::error_code& ec, RetryMode mode,
     }
     scheduler->BlockCurrentThread();
   }
+  self->clear_cooperative_wait_shape();
   if (cooperative_io_depth_.fetch_sub(1) == 1) {
     SetHostNonBlocking(false);
   }

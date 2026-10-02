@@ -1517,6 +1517,8 @@ const char* CooperativeWaitKindName(uint8_t kind) {
       return "fence";
     case XThread::CooperativeWaitKind::kIoOffload:
       return "io-offload";
+    case XThread::CooperativeWaitKind::kSocket:
+      return "socket";
     default:
       return "none";
   }
