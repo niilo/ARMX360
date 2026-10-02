@@ -213,6 +213,7 @@ texture_cache_memory_limit_soft = 384             	# Maximum host texture memory
 texture_cache_memory_limit_soft_lifetime = 30     	# Seconds a texture should be unused to be considered old enough to be deleted if texture memory usage exceeds texture_cache_memory_limit_soft.
 trace_gpu_prefix = "scratch/gpu/"                 	# Prefix path for GPU trace files.
 trace_gpu_stream = false                          	# Trace all GPU packets.
+gpu_idle_stall_backoff_ms = 100                 	# With NO title open, the GPU thread has nothing to wait for and cannot be kicked, so it would otherwise poll ~500x/s on the library screen forever. This lengthens that idle wait and skips its spin phase. 0 = poll every 2ms as before. Never applies while a title is running - there the spin buys wake latency on the frame path, and energy is never traded for a missed frame.
 guest_display_refresh_cap = true                  	# Cap guest display refresh (VSYNC): fixed-rate vblanks (50Hz PAL / 60Hz NTSC).
 
 
