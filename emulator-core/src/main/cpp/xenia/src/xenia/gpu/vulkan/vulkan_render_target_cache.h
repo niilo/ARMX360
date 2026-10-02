@@ -28,6 +28,7 @@
 
 DECLARE_bool(vulkan_depth_unorm24);
 DECLARE_bool(vulkan_normalize_dontcare_keys);
+DECLARE_bool(vulkan_hdr_render_target_as_b10g11r11);
 
 namespace xe {
 namespace gpu {
@@ -220,6 +221,17 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
   }
   bool gamma_render_target_as_unorm16() const {
     return gamma_render_target_as_unorm16_;
+  }
+  // Whether guest 7e3 (2_10_10_10_FLOAT) render targets are stored in the
+  // 32bpp B10G11R11_UFLOAT_PACK32 rather than the 64bpp R16G16B16A16_SFLOAT.
+  // Trades away the destination alpha channel and mantissa precision for
+  // half the bytes per pixel - see vulkan_hdr_render_target_as_b10g11r11 for
+  // the full trade. Cached device support ANDed with the cvar read live, so
+  // the per-game config (which loads before any guest render target is
+  // created) can select it.
+  bool hdr_render_target_as_b10g11r11() const {
+    return b10g11r11_7e3_format_supported_ &&
+           cvars::vulkan_hdr_render_target_as_b10g11r11;
   }
 
   // Color attachment usage for guest passes; switches to the
@@ -1112,6 +1124,7 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
   bool depth_unorm24_vulkan_format_supported_ = false;
   bool depth_float24_round_ = false;
   bool depth_float24_convert_in_pixel_shader_ = false;
+  bool b10g11r11_7e3_format_supported_ = false;
 
   bool msaa_2x_attachments_supported_ = false;
   bool msaa_2x_no_attachments_supported_ = false;

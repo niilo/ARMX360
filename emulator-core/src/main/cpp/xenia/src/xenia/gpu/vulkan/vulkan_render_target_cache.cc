@@ -113,6 +113,41 @@ DEFINE_bool(
     "Vulkan");
 
 DEFINE_bool(
+    vulkan_hdr_render_target_as_b10g11r11, false,
+    "Store guest 7e3 (2_10_10_10_FLOAT) HDR render targets in the 32bpp "
+    "VK_FORMAT_B10G11R11_UFLOAT_PACK32 instead of the 64bpp "
+    "R16G16B16A16_SFLOAT. Requires the driver to expose B10G11R11_UFLOAT "
+    "with sampled-image, color-attachment and blend support; silently "
+    "ignored otherwise.\n"
+    "Why: the guest buffer is 32bpp and we store 64bpp, and on a tile-based "
+    "GPU (Adreno, Mali, PowerVR) bytes-per-pixel decide how much of the "
+    "target fits in GMEM, so the wider target needs roughly 1.5x the tiles "
+    "once color and depth are counted, paying for it in binning and GMEM "
+    "load/store rather than in shader ALU.\n"
+    "Why this is not the default: it is a per-title correctness trade, not a "
+    "free win.\n"
+    " - No alpha. B10G11R11 has no fourth channel, so the guest's 2-bit "
+    "alpha reads back as 1.0 everywhere - both as a blend source factor and "
+    "when the target is resolved back to guest memory. Titles using 7e3 "
+    "alpha (fades, decals, alpha-tested transparency) show fully opaque "
+    "pixels.\n"
+    " - Less precision. B10G11R11 carries 6 mantissa bits on R and G and 5 "
+    "on B, against 7e3's 7 on all three: 2x coarser on red and green, 4x on "
+    "blue. Smooth HDR gradients, bloom halos and tone maps keying on small "
+    "luminance steps will band.\n"
+    " - Not narrower in range, which is the usual objection. Its exponent "
+    "range reaches about 65000, well past 7e3's [0, 32), so bright HDR above "
+    "1.0 is unaffected, and 7e3 is itself unsigned, so negative values were "
+    "already clamped rather than stored.\n"
+    " - Multisampled 7e3 targets additionally require the driver to expose "
+    "B10G11R11 as a multisample color attachment, which is not guaranteed "
+    "even where the format is supported at all.\n"
+    "Enable per game only, in config/<TITLEID>.config.toml under a [Vulkan] "
+    "section, after checking the title still looks right with it on. The "
+    "startup log line states whether it was accepted.",
+    "Vulkan");
+
+DEFINE_bool(
     log_resolve_details, false,
     "Log a once-per-second histogram of resolve (EDRAM copy) operations: "
     "count and bytes per frame grouped by size, color/depth, MSAA, source and "
@@ -1038,6 +1073,37 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
         cvars::gamma_render_target_as_unorm16 &&
         (gamma_unorm16_properties.optimalTilingFeatures &
          kGammaUnorm16Features) == kGammaUnorm16Features;
+
+    // Optionally store guest 7e3 HDR targets in 32bpp B10G11R11_UFLOAT instead
+    // of 64bpp R16G16B16A16_SFLOAT - half the bytes per pixel, at the cost of
+    // the destination alpha channel and mantissa precision. Same usage set as
+    // the gamma unorm16 host format: sampled for transfers and EDRAM dumps,
+    // and a blendable color attachment. Multisample attachment support is
+    // checked per-format rather than assumed, since B10G11R11 is widely
+    // optional as an attachment.
+    constexpr VkFormatFeatureFlags kB10G11R11Features =
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+        VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+        VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
+    constexpr VkFormatFeatureFlags kB10G11R11MultisampleFeatures =
+        VK_FORMAT_FEATURE_COLOR_ATTACHMENT_MULTISAMPLE_BIT;
+    VkFormatProperties b10g11r11_properties;
+    ifn.vkGetPhysicalDeviceFormatProperties(
+        physical_device, VK_FORMAT_B10G11R11_UFLOAT_PACK32,
+        &b10g11r11_properties);
+    // Cache only the device-support half; the cvar is read live in
+    // hdr_render_target_as_b10g11r11 so it can be overridden per-game.
+    b10g11r11_7e3_format_supported_ =
+        (b10g11r11_properties.optimalTilingFeatures & kB10G11R11Features) ==
+            kB10G11R11Features &&
+        (b10g11r11_properties.optimalTilingFeatures &
+         kB10G11R11MultisampleFeatures) == kB10G11R11MultisampleFeatures;
+    XELOGGPU(
+        "VulkanRenderTargetCache: B10G11R11_UFLOAT {} - guest 7e3 render "
+        "targets will use {}",
+        b10g11r11_7e3_format_supported_ ? "supported" : "unavailable",
+        b10g11r11_7e3_format_supported_ ? "32bpp B10G11R11 (if the cvar is on)"
+                                        : "64bpp RGBA16F");
 
     depth_float24_round_ = cvars::depth_float24_round;
     // In-PS conversion requires per-sample shading under MSAA for intersections
@@ -4129,7 +4195,13 @@ VkFormat VulkanRenderTargetCache::GetColorVulkanFormat(
       return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
     case xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT:
     case xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT_AS_16_16_16_16:
-      return VK_FORMAT_R16G16B16A16_SFLOAT;
+      // Guest 7e3 is 32bpp with no exact Vulkan equivalent, so it is normally
+      // stored at 64bpp (half the bytes per pixel at the cost of the
+      // destination alpha channel and mantissa precision - see
+      // vulkan_hdr_render_target_as_b10g11r11).
+      return hdr_render_target_as_b10g11r11()
+                 ? VK_FORMAT_B10G11R11_UFLOAT_PACK32
+                 : VK_FORMAT_R16G16B16A16_SFLOAT;
     case xenos::ColorRenderTargetFormat::k_16_16:
       // TODO(Triang3l): Fallback to float16 (disregarding clearing correctness
       // likely) - possibly on render target gathering, treating them entirely

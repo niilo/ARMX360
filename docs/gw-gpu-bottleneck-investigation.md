@@ -251,10 +251,52 @@ in GMEM, which **increases the tile count** and therefore binning and GMEM load/
 colour+depth at 12 B/px instead of 8, roughly **1.5× the tiles**. This lands on the *same* cost
 centre as Root Cause A (§5) rather than on ALU.
 
-**Possible follow-up (unexplored):** if a given target never needs destination alpha,
-`B10G11R11_UFLOAT_PACK32` would restore 32 bpp. That requires proving alpha is unused for the
-surface, and 11/11/10 unsigned float has different precision and no negative range — so it is a
-per-title correctness risk, not a free win.
+**Status (explored, gated, off by default).** The follow-up is now implemented behind
+`vulkan_hdr_render_target_as_b10g11r11` (default **false**, `Vulkan` category, per-game overridable),
+which selects `B10G11R11_UFLOAT_PACK32` in `VulkanRenderTargetCache::GetColorVulkanFormat`
+(`vulkan_render_target_cache.cc:4196`). It is additionally gated on the driver exposing that format
+with `SAMPLED_IMAGE | COLOR_ATTACHMENT | COLOR_ATTACHMENT_BLEND | COLOR_ATTACHMENT_MULTISAMPLE`, and
+the decision is logged at startup so a run that asked for it and did not get it is visible.
+
+**Destination alpha is *not* provably unused — it is read unconditionally.** Every path that moves a
+7e3 host target's texels reads all four components (the guest format reports 4, `xenos.h:334-345`),
+and each one derives the guest's 2-bit alpha from the sampled fourth component:
+
+| consumer | evidence (`vulkan_render_target_cache.cc`, post-`b10g11r11` line numbers) |
+|---|---|
+| ownership transfer (source) | component mask `(1 << count) - 1` = `0b1111` at `:4925-4926`, sampled + extracted at `:5766-5790` |
+| ownership transfer (dest, 7e3→7e3) | all 4 components passed straight through at `:6288-6300` |
+| ownership transfer (dest, 7e3→32bpp) | `NClamp(a,0,1)*3+0.5` into bits 30-31 at `:6315-6326` |
+| EDRAM dump | `NClamp(source.a,0,1)` at `:9028-9032` |
+| direct-host resolve (compute) | `XeResolveHostColorPackUnorm(color.a, 3.0f) << 30u`, `resolve_host_color_pack.xesli:61` |
+| resolve clear | `clearValue.color.float32[3]` at `:8525-8526` |
+| guest blending | alpha blend factors at `vulkan_pipeline_cache.cc:1897-1904` |
+
+So "destination alpha is unused" cannot be established statically for any target — it would need
+per-title evidence from a trace. That is the same shape as the Fable II ground-geometry bug
+(`GAME_COMPAT.md:139`, draws issued, nothing written): **a format substitution that silently drops a
+channel fails quietly, not loudly.**
+
+Two corrections to the reasoning in this section, both material to the decision:
+
+- **"no negative range" is not a regression.** 7e3 is unsigned — `Float7e3To32`
+  (`xenos.cc:104-120`) splits the 10 bits into a 7-bit mantissa and a 3-bit exponent with no sign
+  bit, and `UnclampedFloat32To7e3` clamps to `[0, 31.875]`. Both formats clamp negatives to zero
+  already.
+- **Range is wider, not narrower.** B10G11R11_UFLOAT's 5-bit exponent reaches ~65000, comfortably
+  past 7e3's `[0, 32)`. Bright HDR above 1.0 is *not* what breaks.
+
+What actually breaks is alpha (above) and mantissa precision: **6 bits on R/G and 5 on B against
+7e3's 7 on all three** — 2× coarser on red and green, 4× on blue.
+
+**The present path is not a consumer.** `IssueSwap` reads the front buffer through
+`RequestSwapTexture` (`vulkan_texture_cache.cc:1083`), which samples a *guest texture* out of guest
+memory, and the FXAA luma image is a fixed `R16G16B16A16_SFLOAT`
+(`vulkan_command_processor.h:1027`) independent of the render target format. So this lever cannot
+help or harm presentation directly — it only changes what the guest reads back.
+
+**Unmeasured.** The 1.5× tile-count argument in this section is arithmetic about GMEM residency, not
+a measurement on any device. The A/B runbook is §13.
 
 ### Shader variant data (`tu_variant` log, 40 FS variants)
 
@@ -516,3 +558,73 @@ reduction (the existing pass-fusion work), not further area trimming.
 - 4x MSAA depth passes (960x688, 80x8192): extents are in host pixels; keep the union in the same
   space as `dynamic_scissor_` (host pixels), no per-sample math.
 
+
+---
+
+## 13. A/B runbook — `vulkan_hdr_render_target_as_b10g11r11`
+
+**Do not flip this from the ImGui debug dialog.** `GetColorVulkanFormat` feeds both image creation
+*and* graphics-pipeline `VkPipelineRenderingCreateInfo::pColorAttachmentFormats`
+(`vulkan_pipeline_cache.cc:2702`), and pipelines are cached. Toggling it after a title is running can
+pair a new-format attachment with a cached old-format pipeline. Set it before launch, via the
+per-game config (preferred) or the global TOML, exactly like `vulkan_depth_unorm24`. It is
+deliberately absent from the Android settings schema for the same reason `vulkan_direct_host_resolve`
+is.
+
+### 13.1 Per-game setup
+
+```toml
+# <storage_root>/config/<TITLEID>.config.toml
+[Vulkan]
+vulkan_hdr_render_target_as_b10g11r11 = true
+```
+
+Section header **must** be `[Vulkan]` — keys are looked up as `category.name`; a bare key is
+silently ignored (`config.cc`, `ReadGameConfig`). `TITLEID` is the 8-hex uppercase ID from
+`Title ID:` in `xe.log`.
+
+### 13.2 Confirm it took effect — before judging the picture
+
+```sh
+adb shell "grep -E 'B10G11R11_UFLOAT|Loading game config' \
+  /sdcard/Android/data/xendroid.compose/files/compose/xe.log | head"
+```
+
+Both must hold:
+
+1. `B10G11R11_UFLOAT supported` — the driver advertises it. **`unavailable` means the cvar was
+   ignored**; any picture difference is then noise, not the format.
+2. `Loading game config: <path>` appears — otherwise the per-game block never loaded and the
+   global default (off) stands.
+
+Unlike a shader recompile, the host image format is chosen when each render target is created, so
+there is no shader-cache warm-up to wait out. Still: **run twice, take the second** (§10.1), and keep
+`TU_DEBUG` free of `sysmem` (§13.4).
+
+### 13.3 What to look at, in order
+
+1. **Correctness first, fps second.** Anything below is a reason to abandon it for that title.
+   - Alpha: fades, decals, additive glow, anything translucent over the HDR target rendering
+     **fully opaque**. This is the expected failure and the one to check first.
+   - Banding in smooth HDR gradients and bloom halos; blue-heavy gradients worst (5 mantissa bits).
+   - Resolution clears, depth-based fades and anything reading the target's alpha after a resolve.
+2. **fps** on the pinned stock driver (`mainline-turnip-V31`), warm second run. If it wins, confirm
+   it is not thermal (§2) and re-confirm the second run.
+3. **Cross-check the mechanism.** If fps does *not* move, that is consistent with §7's arithmetic
+   being wrong rather than with the format being harmless — check the unit counters as in §12.7
+   before concluding either way.
+
+### 13.4 Traps
+
+- `TU_DEBUG=sysmem` forces untiled rendering, where bytes-per-pixel barely matters — the A/B would
+  read as noise (§5, §12.7).
+- Do not combine with `vulkan_in_pass_resolve` on the first attempt; both change what the resolve
+  path does, and a difference then has two candidate causes.
+- A title with no 7e3 render target is unaffected. Check first — `VkPassId` lines name the formats:
+
+  ```sh
+  adb shell "grep -oE 'color[0-9] RT @ .*' \
+    /sdcard/Android/data/xendroid.compose/files/compose/xe.log | sort -u"
+  ```
+
+  If `k_2_10_10_10_FLOAT` does not appear, there is nothing to measure and the run proves nothing.
