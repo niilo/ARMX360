@@ -1,5 +1,9 @@
 *.iml
 .gradle
+# Container build variant of the above: GRADLE_USER_HOME is redirected here so
+# the docker build's dependency cache does not land in the developer's real
+# ~/.gradle. Same content, different path, so it needs its own rule.
+.gradle-container/
 /local.properties
 /.idea/
 .DS_Store
