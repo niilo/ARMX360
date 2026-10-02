@@ -47,10 +47,38 @@ DEFINE_uint32(
     "How many times the command processor polls the ring buffer with a cheap "
     "yield before parking on the write-pointer event when the guest has "
     "produced no commands. The spin exists to dodge wake latency when the "
-    "guest is about to kick again immediately, but on ARM64 the yield is a "
-    "WFE that does not actually park on a busy SoC, so every iteration burns "
-    "a core at full clock. 0 parks immediately; the event is signalled by "
-    "UpdateWritePointer, so no wake-up is missed either way.",
+    "guest is about to kick again immediately, so it is a frame-path latency "
+    "knob and not a free-energy knob: lowering it adds up to one wake to every "
+    "batch of drawing. On ARM64 the yield is a WFE (threading_posix.cc:232) "
+    "gated on wfe_yield (default true) and on HWCAP_EVTSTRM, so between the "
+    "~10 kHz generic-timer ticks it parks the core in a low-power stall "
+    "instead of burning it; it is not a full-clock spin just because it is a "
+    "spin. It is still not free: WFE returns as soon as any event arrives, so "
+    "on a busy SoC the iterations come back fast. Past this budget the loop "
+    "stops spinning for good (loop_count only rises, command_processor.cc:687) "
+    "and the steady state is the 2 ms blocking wait, ~500 wakeups/s. That "
+    "timeout is load-bearing rather than cosmetic: CallInThread "
+    "(command_processor.cc:428) sets has_pending_fns_ without signalling this "
+    "event, so lengthening it delays shader-storage init and cache clears "
+    "instead of saving energy. 0 parks immediately; the event is signalled by "
+    "UpdateWritePointer, so no kick is missed either way. Raise it per-title "
+    "via '[GPU] gpu_stall_spin_iterations = N' when a game's batches are small "
+    "enough that the extra latency reads as stutter.",
+    "GPU");
+
+DEFINE_uint32(
+    gpu_idle_stall_backoff_ms, 100,
+    "How long the command processor sleeps on the write-pointer event when NO "
+    "title is open, instead of the 2 ms frame-path timeout. With no title the "
+    "guest can never kick the ring buffer, so nothing is ever late and the "
+    "2 ms poll only bought ~500 wakeups/s of pure idle cost for as long as the "
+    "emulator sat on the library screen - a real battery bug on a handheld. "
+    "UpdateWritePointer signals the event on every kick, so a title that opens "
+    "wakes this immediately and the backoff costs no startup latency. Used "
+    "ONLY while no title is open; once one is running this is the normal 2 ms "
+    "path again, so frame pacing is untouched. 0 restores the 2 ms poll "
+    "everywhere. Raise it per-title via "
+    "'[GPU] gpu_idle_stall_backoff_ms = N'.",
     "GPU");
 
 DEFINE_bool(disassemble_pm4, false,
@@ -681,11 +709,27 @@ void CommandProcessor::WorkerThreadMain() {
       // event is too high.
       const uint64_t fs_stall_begin = FrameStatsBegin();
       PrepareForWait();
-      uint32_t loop_count = 0;
+      // With no title open the guest cannot kick the ring buffer at all, so
+      // there is no deadline to be late for and the spin phase below is pure
+      // idle burn - the emulator would otherwise spend ~500 wakeups/s forever
+      // sitting on the library screen. Take the longest sleep we are allowed
+      // and skip the spin entirely in that state only. This is deliberately
+      // NOT applied while a title runs: there the spin is buying wake latency
+      // on the frame path, and energy must never be traded for a missed frame.
+      // Wake-up is not at risk either way - UpdateWritePointer (below) signals
+      // write_ptr_index_event_ on every kick, so a title that opens is picked
+      // up immediately rather than after the backoff expires.
+      const bool idle_no_title =
+          cvars::gpu_idle_stall_backoff_ms != 0 && kernel_state_ &&
+          !kernel_state_->is_title_open();
+      uint32_t loop_count =
+          idle_no_title ? cvars::gpu_stall_spin_iterations + 1 : 0;
       do {
         // If we spin around too much, revert to a "low-power" state.
         if (loop_count > cvars::gpu_stall_spin_iterations) {
-          constexpr int wait_time_ms = 2;
+          const int wait_time_ms =
+              idle_no_title ? static_cast<int>(cvars::gpu_idle_stall_backoff_ms)
+                            : 2;
           xe::threading::Wait(write_ptr_index_event_.get(), true,
                               std::chrono::milliseconds(wait_time_ms));
         } else {

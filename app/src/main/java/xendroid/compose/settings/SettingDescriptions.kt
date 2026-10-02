@@ -44,6 +44,7 @@ object SettingDescriptions {
         "force_convert_triangle_fans_to_lists" to "Always convert triangle fans to triangle lists on the CPU even when the GPU supports fans",
         "gpu" to "Graphics backend to use for rendering (Vulkan or null)",
         "gpu_stall_spin_iterations" to "How long the graphics thread busy-waits for the game to send more work before going to sleep. Lower frees up a CPU core and cuts heat; too low can add a little latency to each batch of drawing. 0 sleeps immediately",
+        "gpu_idle_stall_backoff_ms" to "While NO game is open, how long the graphics thread sleeps before re-checking for work. The old 2ms poll burned ~500 wakeups a second for nothing on the library screen, which costs battery on a handheld. Only used when no game is running, so in-game pacing is unaffected. 0 restores the old behaviour",
         "framerate_limit" to "Caps how many frames the emulator presents per second. The console never went above 60, so frames beyond your screen's refresh are just heat and battery. Unlimited lets it run as fast as it can",
         "gpu_allow_invalid_fetch_constants" to "Tolerate invalid texture/vertex fetch constants instead of failing; works around errors in some games",
         "guest_display_refresh_cap" to "Cap vblanks at the console's 50/60Hz rate; off lets the game run as fast as possible",

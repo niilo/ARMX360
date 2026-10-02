@@ -183,6 +183,7 @@ object SettingsSchema {
             b("GPU", "log_ringbuffer_kickoff_initiator_bts", "Log ringbuffer kickoff initiator BTs", false),
             i("GPU", "texture_cache_memory_limit_hard", "Texture cache hard limit (MB)", 768, 512, 4096),
             i("GPU", "gpu_stall_spin_iterations", "GPU stall spin iterations", 32, 0, 512),
+            i("GPU", "gpu_idle_stall_backoff_ms", "GPU idle stall backoff (ms)", 100, 0, 10000),
             b("GPU", "gpu_allow_invalid_fetch_constants", "Allow invalid fetch constants", true),
             b("GPU", "log_guest_driven_gpu_register_written_values", "Log guest-driven GPU register writes", false),
             b("GPU", "trace_gpu_stream", "Trace GPU stream", false),
