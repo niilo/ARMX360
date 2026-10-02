@@ -1,0 +1,28 @@
+i> f:0000000 7F000001 ----------- CONFIG DUMP -----------
+[GPU]
+store_shaders = true
+readback_resolve = 'uma'
+log_gpu_frame_time_breakdown = true
+
+[Vulkan]
+vulkan_lib_path = "/data/user/0/xendroid.compose/files/compose/driver/a6xx-instrumented-perf/libvulkan_freedreno.so"
+turnip_debug = ''
+vulkan_mid_frame_submission_draws = 1300
+----------- END OF CONFIG DUMP ----
+i> f:0000000 7F000001 Loaded config: /sdcard/Android/data/xendroid.compose/files/compose/xenia-canary.config.toml
+i> f:0000000 7F000002 Storage root: /sdcard/Android/data/xendroid.compose/files/compose
+i> f:0000000 7F000003 Shader storage: pipeline file /sdcard/Android/data/xendroid.compose/files/compose/cache/shaders/shareable/584108FF.fbo.vk.xpso (9186 bytes on disk)
+i> f:0000000 7F000003 Loaded 1284 shaders from storage
+i> f:0000000 7F000003 Loaded 906 pipeline descriptions, 37 shader translations needed
+i> f:0000001 7F000004 Loading custom Vulkan driver: /data/user/0/xendroid.compose/files/compose/driver/a6xx-instrumented-perf/libvulkan_freedreno.so
+i> f:0000001 7F000004 Vulkan device 'Adreno (TM) 650': API 1.3.225 (1.3 used), vendor 0x5143, device 0x16305000, driver version 0x6900000
+i> f:0000001 7F000004 * driverName: Turnip
+i> f:0000002 7F000005 Extracted title_id 584108FF from: /sdcard/roms/gw2.xex
+i> f:0000002 7F000005 Loading game config: /sdcard/Android/data/xendroid.compose/files/compose/config/584108FF.config.toml
+i> f:0000002 7F000005   readback_resolve = "none"
+i> f:0000002 7F000005   log_gpu_frame_time_breakdown = true
+i> f:0000002 7F000005   render_area_dirty_extent = true
+i> f:0000002 7F000005 Applied 3 game config override(s)
+i> f:0000003 7F000006 VkPassTime: 1920x1376 : 9.04ms/fr (5.2pass 14draw/fr, 1.738ms ea) scissor<=1920x8192 viewport<=8192x8192
+i> f:0000004 7F000006 VkFrameSync: 22 frames | per frame: awaits=1.0 | draws=306 rp_begins=57 splits=0.2
+i> f:0000001 7F000004 Set TU_PERF_SAMPLER=1 (period 250ms) for the Turnip driver

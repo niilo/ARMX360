@@ -97,6 +97,11 @@ private/
 *.trace
 imgui.ini
 *.log
+# ...but the bench-ab harness's xe.log fixtures ARE test inputs, not logs: they
+# encode the exact log shape tools/bench-ab.sh asserts on (config.cc:97/119/335/
+# 350/354, base/logging.cc's "<type>> f:<frame> <thread> " prefix). Without them
+# committed, the suite cannot run and the assertions go untested.
+!tools/testdata/bench-ab/*.log
 
 # ==============================================================================
 # Build system output
