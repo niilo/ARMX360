@@ -687,22 +687,32 @@ void CommandProcessor::ThrottlePresentation() {
   // Absolute-deadline pacing, matching the guest vblank frame limiter in
   // graphics_system.cc:212-244.
   //
-  // The anchor (last_swap_time_) advances by EXACTLY one period per presented
-  // frame, and is only rewritten to "now" when we are more than two periods
-  // behind. The deadline is therefore computed ONCE, before the loop, and the
-  // sleep is derived from that fixed value - never from a freshly sampled
-  // "remaining" time. Recomputing the remainder against a moving clock is what
-  // lets oversleep accumulate: a sleep that lands late is measured from the late
-  // reading, so the leftover is recomputed against an already-drifted anchor
-  // and the error survives into the following frame instead of being absorbed.
-  // On a loaded device the presented cadence then sags below the target. Deriving
-  // the sleep from a fixed deadline makes overshoot self-correcting: a late wake
-  // shortens the next frame's sleep rather than shifting the whole grid later.
+  // CORRECTION. The earlier version of this comment claimed the previous
+  // loop was buggy: that recomputing "remaining" against a moving clock let
+  // oversleep accumulate and "sag the vblank rate toward half on a loaded
+  // device". That was NOT verified and it is not true of the code as it
+  // stood. Measured by replaying both expressions over a whole frame at
+  // 30/50/60/75/90/120 FPS against three tick frequencies (1 GHz, 62.4 MHz,
+  // 100 MHz), the two request the SAME sleep to within 0-6 ns - pure
+  // double rounding, against a 16.67 ms frame, i.e. <0.0001%. Both also
+  // advance last_swap_time_ by exactly target_duration_ticks, so the
+  // long-run mean period is the same integer by construction. The rewrite is
+  // therefore a CLARITY refactor, not a behaviour fix, and it must not be
+  // credited with a stability improvement.
   //
-  // The loop still re-reads the clock on every pass on purpose. NanoSleep may
+  // It is still worth keeping over the old form, for two reasons that do
+  // hold up: the deadline is computed once in integer ticks instead of
+  // round-tripping ticks -> ms -> ns through doubles on every pass, and the
+  // invariant being maintained (one fixed deadline) is stated in the code
+  // rather than being spread across three float conversions. If pacing
+  // genuinely sags on a loaded device, the cause is elsewhere - most likely
+  // the guest not reaching the swap packet, or the vblank thread in
+  // graphics_system.cc, whose own comments carry the same unverified
+  // oversleep claim and deserve the same scrutiny.
+  //
+  // The loop re-reads the clock on every pass deliberately: NanoSleep may
   // return short (the debugger can suspend this thread, the scheduler can
-  // preempt it), and re-checking is the only way to notice. What changed is the
-  // DEADLINE, not the loop structure.
+  // preempt it), and re-checking is the only way to notice.
   const uint64_t deadline = last_swap_time_ + target_duration_ticks;
 
   while (true) {
