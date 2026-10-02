@@ -256,10 +256,37 @@ class VulkanCommandProcessor final : public CommandProcessor {
       VkRenderPass render_pass,
       const VulkanRenderTargetCache::Framebuffer* framebuffer,
       VkImageView transfer_dest_view, bool transfer_dest_is_depth);
+  // Why a render pass was ended. Attribution only, no behaviour depends on it -
+  // see the log_gpu_pass_break_reasons cvar. Every EndRenderPass() call site
+  // classifies itself so a frame's pass count can be attributed to a cause;
+  // kUnattributed is the default and is reported loudly, because a non-zero
+  // count means a call site was added without classifying it.
+  enum class PassEndReason : uint32_t {
+    // SubmitBarriers had a pending barrier list, which cannot be recorded
+    // inside a render pass instance (VUID-vkCmdPipelineBarrier-renderpass).
+    kBarriers,
+    // SubmitBarriers(true) with nothing pending: the caller is about to record
+    // something that cannot go inside a pass (buffer copy, dispatch, upload).
+    kForcedOutsidePass,
+    // The guest's own framebuffer / render pass changed: the render target
+    // cache reconfigured a surface (pitch, format, MSAA, EDRAM base) or an
+    // EDRAM ownership transfer had to run in its own pass.
+    kGuestFramebufferChange,
+    // The single-attachment EDRAM ownership-transfer pass changed destination.
+    kTransferFramebuffer,
+    // Occlusion query (ZPD) submission flip, FSI counter clear, or drain.
+    kOcclusionQuery,
+    // EndSubmission.
+    kSubmissionEnd,
+    // Primitive processor uploading its builtin index buffer.
+    kPrimitiveSetup,
+    kUnattributed,
+    kCount,
+  };
   // Must be called before doing anything outside the render pass scope,
   // including adding pipeline barriers that are not a part of the render pass
   // scope. Submission must be open.
-  void EndRenderPass();
+  void EndRenderPass(PassEndReason reason = PassEndReason::kUnattributed);
 
   VkDescriptorSetLayout GetSingleTransientDescriptorLayout(
       SingleTransientDescriptorLayout transient_descriptor_layout) const {
@@ -775,6 +802,10 @@ class VulkanCommandProcessor final : public CommandProcessor {
   };
   // Accumulated per bucket key since the last report.
   std::map<uint32_t, PassBucketStat> pass_bucket_stats_;
+  // Render passes ended since the last report, per PassEndReason. Attribution
+  // only; see log_gpu_pass_break_reasons. Reset with pass_bucket_stats_ in the
+  // once-per-second report in IssueSwap.
+  uint64_t pass_end_counts_[size_t(PassEndReason::kCount)] = {};
   void OpenPassTimestamp(uint32_t bucket_key);
   void ClosePassTimestamp();
   bool submission_open_ = false;

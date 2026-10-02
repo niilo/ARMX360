@@ -128,7 +128,8 @@ void VulkanPrimitiveProcessor::BeginSubmission() {
     // been used yet, and builtin_index_buffer_upload_ is written before
     // submitting commands reading it.
 
-    command_processor_.EndRenderPass();
+    command_processor_.EndRenderPass(
+        VulkanCommandProcessor::PassEndReason::kPrimitiveSetup);
 
     DeferredCommandBuffer& command_buffer =
         command_processor_.deferred_command_buffer();

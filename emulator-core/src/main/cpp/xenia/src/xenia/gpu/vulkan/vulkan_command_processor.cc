@@ -57,6 +57,47 @@ DEFINE_bool(
     "groundwork; off by default because it buys nothing here.",
     "GPU");
 
+DEFINE_bool(
+    log_gpu_pass_break_reasons, false,
+    "Attribute every render pass break to the cause that forced it, and print "
+    "the in-pass / total GPU time split, as two extra lines in the "
+    "log_gpu_frame_time_breakdown once-per-second report. This cvar only adds "
+    "those two lines - the counters and the GPU timestamps it summarises are "
+    "already gated on log_gpu_frame_time_breakdown, so that one must be true "
+    "too (the 'VkPassSplit' line is only meaningful then).\n"
+    "WHY THIS EXISTS. docs/gw-gpu-bottleneck-investigation.md section 12.4 "
+    "gates the next performance lever on a number nobody has ever measured: "
+    "how much of a frame's GPU time is inside a render pass and how much is "
+    "between passes. The sum of the VkPassTime buckets only ever accounts for "
+    "the passes; barriers, queue submissions, shared-memory uploads, buffer "
+    "copies, compute dispatches and any GPU idle inside a submission are "
+    "charged to no bucket at all. 'VkPassSplit' subtracts them for you: gpu is "
+    "the top-of-pipe to bottom-of-pipe bracket around each submission, in_pass "
+    "is the sum of the per-bucket pass timestamps, gap is idle between "
+    "consecutive submissions, and inter_pass is what is left - the part no "
+    "render-area or shader change can touch.\n"
+    "'VkPassBreaks' then says WHY the passes ended: fb_change is the guest "
+    "reconfiguring a surface (pitch, format, MSAA, EDRAM base), barriers is a "
+    "pending pipeline barrier list, xfer_pass is an EDRAM ownership transfer "
+    "that could not be merged into the guest pass, forced_outside_pass is a "
+    "buffer copy / dispatch / upload, and query / submission / primitive_setup "
+    "are the remaining fixed costs. This is what decides whether pass-count "
+    "work is worth building: if fb_change dominates, the passes are forced by "
+    "the guest's EDRAM layout churn; if barriers or forced_outside_pass "
+    "dominate, the passes are ours and cheap to remove.\n"
+    "CAVEATS. Attribution only - no rendering behaviour depends on it. It does "
+    "NOT make anything slower, but do not read an fps number off a run that "
+    "has log_gpu_frame_time_breakdown enabled: that path reserves query pools "
+    "and copies timestamp results with VK_QUERY_RESULT_WAIT_BIT every "
+    "submission, so it is a locating tool, never a measurement tool. Also "
+    "check the 'pass pairs dropped' line: at most 96 pass pairs are "
+    "timestamped per submission, and a pass that spans a submission split is "
+    "uncounted, so a non-zero drop count means the reported in_pass is an "
+    "under-count and inter_pass correspondingly over-stated. A non-zero "
+    "'unattributed' count means an EndRenderPass call site was added without "
+    "classifying itself.",
+    "GPU");
+
 DEFINE_int32(
     vulkan_mid_frame_submission_draws, 1300,
     "If greater than 0, end and submit the current command buffer after this "
@@ -2267,10 +2308,12 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
           s.resolve_gpu_max_ns / 1e6, s.resolve_ts_dropped, s.draws / f,
           s.render_pass_begins / f, s.primary_buffer_splits / f);
       // Per-render-pass-bucket GPU time (key: WxH, bit31 = ownership transfer).
+      uint64_t pass_in_pass_ns = 0;
       if (!pass_bucket_stats_.empty()) {
         for (const auto& kv : pass_bucket_stats_) {
           const uint32_t key = kv.first;
           const bool transfer = (key & 0x80000000u) != 0;
+          pass_in_pass_ns += kv.second.ns;
           XELOGI(
               "VkPassTime: {}{}x{} : {:.2f}ms/fr ({:.1f}pass {:.0f}draw/fr, "
               "{:.3f}ms ea) scissor<={}x{} viewport<={}x{}",
@@ -2289,6 +2332,64 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
                pass_ts_dropped_);
         pass_ts_dropped_ = 0;
       }
+      if (cvars::log_gpu_pass_break_reasons) {
+        // The in-pass / total split section 12.4 of the GW investigation asks
+        // for and that no run has ever produced. `gpu` is the whole submission
+        // bracket, so it contains the passes plus everything recorded between
+        // them; `gap` is the idle between consecutive submissions, which is
+        // double-counted nowhere else and must be removed before the remainder
+        // is called inter-pass. `resolve` is GPU time already attributed to
+        // EDRAM resolve emission regions, so it is reported separately rather
+        // than left inside the inter-pass remainder.
+        //
+        // Signed arithmetic on purpose: gpu_gap_ns is measured between
+        // submissions while gpu_exec_ns is summed per submission, so the two
+        // are not guaranteed to nest, and an unsigned subtraction would print
+        // a nonsense 1.8e19 ms instead of a visibly-wrong negative number.
+        const int64_t gpu_ns = int64_t(s.gpu_exec_ns);
+        const int64_t gap_ns = int64_t(s.gpu_gap_ns);
+        const int64_t in_pass_ns = int64_t(pass_in_pass_ns);
+        const int64_t resolve_ns = int64_t(s.resolve_gpu_ns);
+        const int64_t inter_pass_ns = gpu_ns - gap_ns - in_pass_ns;
+        XELOGI(
+            "VkPassSplit: gpu={:.2f}ms/fr "
+            "in_pass={:.2f}ms/fr ({:.0f}%) resolve={:.2f}ms/fr "
+            "gap={:.2f}ms/fr inter_pass={:.2f}ms/fr ({:.0f}% of non-gap) "
+            "[submissions={:.1f} draws={:.0f} passes_started={:.0f}]",
+            gpu_ns / f / 1e6,
+            in_pass_ns / f / 1e6,
+            gpu_ns > 0 ? 100.0 * double(in_pass_ns) / double(gpu_ns) : 0.0,
+            resolve_ns / f / 1e6, gap_ns / f / 1e6, inter_pass_ns / f / 1e6,
+            gpu_ns - gap_ns > 0
+                ? 100.0 * double(inter_pass_ns) / double(gpu_ns - gap_ns)
+                : 0.0,
+            s.submissions / f, s.draws / f, s.render_pass_begins / f);
+        // Why the passes ended. Sums to the number of pass ends, which is one
+        // less than the number of pass begins plus however many were still
+        // open at report time - if it doesn't roughly track passes_started,
+        // the attribution has a hole.
+        uint64_t pass_ends = 0;
+        for (size_t i = 0; i < size_t(PassEndReason::kCount); ++i) {
+          pass_ends += pass_end_counts_[i];
+        }
+        XELOGI(
+            "VkPassBreaks: {:.1f} ends/fr | fb_change={:.1f} barriers={:.1f} "
+            "xfer_pass={:.1f} forced_outside_pass={:.1f} query={:.1f} "
+            "submission={:.1f} primitive_setup={:.1f} unattributed={:.1f}",
+            pass_ends / f,
+            pass_end_counts_[size_t(PassEndReason::kGuestFramebufferChange)] /
+                f,
+            pass_end_counts_[size_t(PassEndReason::kBarriers)] / f,
+            pass_end_counts_[size_t(PassEndReason::kTransferFramebuffer)] / f,
+            pass_end_counts_[size_t(PassEndReason::kForcedOutsidePass)] / f,
+            pass_end_counts_[size_t(PassEndReason::kOcclusionQuery)] / f,
+            pass_end_counts_[size_t(PassEndReason::kSubmissionEnd)] / f,
+            pass_end_counts_[size_t(PassEndReason::kPrimitiveSetup)] / f,
+            pass_end_counts_[size_t(PassEndReason::kUnattributed)] / f);
+      }
+      // Reset outside the cvar check so the counters always mean "since the
+      // last report", whether or not the lines above were printed.
+      std::memset(pass_end_counts_, 0, sizeof(pass_end_counts_));
       s = VkFrameSyncStats();
       s.last_report_ns = now;
     }
@@ -3034,11 +3135,11 @@ bool VulkanCommandProcessor::SubmitBarriers(bool force_end_render_pass) {
   SplitPendingBarrier();
   if (pending_barriers_.empty()) {
     if (force_end_render_pass) {
-      EndRenderPass();
+      EndRenderPass(PassEndReason::kForcedOutsidePass);
     }
     return false;
   }
-  EndRenderPass();
+  EndRenderPass(PassEndReason::kBarriers);
   for (auto it = pending_barriers_.cbegin(); it != pending_barriers_.cend();
        ++it) {
     auto it_next = std::next(it);
@@ -3152,7 +3253,7 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
   // End current render pass/rendering if active, via EndRenderPass so any open
   // occlusion query segment is closed first. A query begun inside the pass must
   // be ended before the pass is. Also closes the fork's pass timestamp.
-  EndRenderPass();
+  EndRenderPass(PassEndReason::kGuestFramebufferChange);
 
   current_render_pass_ = use_dynamic_rendering ? VK_NULL_HANDLE : render_pass;
   current_framebuffer_ = framebuffer;
@@ -3258,7 +3359,7 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
   // End current render pass/rendering if active, via EndRenderPass so any open
   // occlusion query segment is closed first. A query begun inside the pass must
   // be ended before the pass is. Also closes the fork's pass timestamp.
-  EndRenderPass();
+  EndRenderPass(PassEndReason::kTransferFramebuffer);
 
   current_render_pass_ = use_dynamic_rendering ? VK_NULL_HANDLE : render_pass;
   current_framebuffer_ = framebuffer;
@@ -3339,11 +3440,12 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
   OpenQuerySegment(false);
 }
 
-void VulkanCommandProcessor::EndRenderPass() {
+void VulkanCommandProcessor::EndRenderPass(PassEndReason reason) {
   assert_true(submission_open_);
   if (!in_render_pass_) {
     return;
   }
+  ++pass_end_counts_[size_t(reason)];
   // Close native Vulkan occlusion queries before ending the pass. FSI counter
   // segments don't use vkCmdBeginQuery / vkCmdEndQuery and can stay logically
   // open across render passes.
@@ -5596,7 +5698,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenZPDQuery(
       if (in_render_pass_) {
         saved_render_pass = current_render_pass_;
         saved_framebuffer = current_framebuffer_;
-        EndRenderPass();
+        EndRenderPass(PassEndReason::kOcclusionQuery);
       }
       if (!EndSubmission(false)) {
         return QueryOpenResult::kFailed;
@@ -5655,7 +5757,7 @@ CommandProcessor::QueryOpenResult VulkanCommandProcessor::OpenZPDQuery(
         VkRenderPass saved_render_pass = current_render_pass_;
         const VulkanRenderTargetCache::Framebuffer* saved_framebuffer =
             current_framebuffer_;
-        EndRenderPass();
+        EndRenderPass(PassEndReason::kOcclusionQuery);
         zpd_host_query_pool_->ClearFSICounter(deferred_command_buffer_,
                                               zpd_active_query_index_);
 
@@ -5850,7 +5952,7 @@ bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
       }
       pipeline_cache_->AwaitPipelineCompletion();
     }
-    EndRenderPass();
+    EndRenderPass(PassEndReason::kOcclusionQuery);
     if (!EndSubmission(false)) {
       return false;
     }
@@ -6424,7 +6526,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
   if (submission_open_) {
     assert_false(scratch_buffer_used_);
 
-    EndRenderPass();
+    EndRenderPass(PassEndReason::kSubmissionEnd);
 
     render_target_cache_->EndSubmission();
 
