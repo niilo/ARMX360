@@ -139,6 +139,26 @@ First build downloads Gradle 8.11.1 (SHA-256 verified) and compiles the full
 native tree — ~8–9 min cold. The APK lands in
 `app/build/outputs/apk/debug/`.
 
+### Native optimization and link time
+
+`emulator-core` sets CMake's config name explicitly, because AGP's
+`externalNativeBuild` does not set `CMAKE_BUILD_TYPE` on its own and an empty
+value makes every `$<CONFIG:Release>` in `xenia/CMakeLists.txt` match nothing.
+Which means:
+
+| Variant | `CMAKE_BUILD_TYPE` | Effect |
+|---------|--------------------|--------|
+| `release` | `Release` | `-O3`, `-finline-functions`, `-funroll-loops`, **ThinLTO** via `lld` |
+| `debug` | `RelWithDebInfo` | `-O2 -g -DNDEBUG` — same flags debug used before |
+| `XENDROID_HWASAN=true` | *(unset)* | unchanged: `-O1` + `-fsanitize=hwaddress` |
+
+ThinLTO is why a **release** link is dramatically slower than a debug one — it
+is a whole-program optimization pass over every archive. That cost is what
+`XENIA_ENABLE_LTO` exists to control: pass
+`-DXENIA_ENABLE_LTO=OFF` in `externalNativeBuild { cmake { arguments ... } }`
+to get a Release-configured binary (`-O3`, no LTO) that still links quickly.
+`-g` is never dropped, in any configuration.
+
 ## Windows notes
 
 The vendored `xenia-canary/third_party` tree is deep; combined with Gradle's

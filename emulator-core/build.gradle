@@ -2,6 +2,11 @@ plugins {
     alias(libs.plugins.android.library)
 }
 
+// XENDROID_HWASAN=true selects the instrumented build (see the externalNativeBuild
+// block below). Hoisted out of that block because the per-buildType CMake config
+// has to opt out of it too.
+def hwasan = System.getenv('XENDROID_HWASAN') == 'true'
+
 // :emulator-core owns the native build (CMake -> libe.so + libhardware_ProcessorInfo.so)
 // and the JNI-bound Java classes, so the heavy native tree builds exactly once and
 // the app module (:app) consumes it transitively.
@@ -32,12 +37,18 @@ android {
                 // the clobbered chunk later. Needs -O1 and a frame pointer to
                 // keep the reports readable, and the runtime is pulled in by
                 // the linker flag below.
-                if (System.getenv('XENDROID_HWASAN') == 'true') {
+                if (hwasan) {
                     // -DNDEBUG as in the normal build: without it every
                     // assert_always becomes live, and the emulator has
                     // assertions that a shipping build deliberately runs past.
                     // The point here is to change memory checking, not program
                     // semantics.
+                    //
+                    // CMAKE_BUILD_TYPE is deliberately NOT set here. The
+                    // Release config would append -O3 and -flto=thin *after*
+                    // the -O1 above on the command line, and the last -O wins,
+                    // so the sanitizer build would silently stop being -O1 and
+                    // would gain LTO that HWASan does not support well.
                     cFlags '-O1', '-DNDEBUG', '-g', '-fno-strict-aliasing',
                            '-fsanitize=hwaddress', '-fno-omit-frame-pointer'
                     cppFlags '-O1', '-DNDEBUG', '-g', '-fno-strict-aliasing',
@@ -48,10 +59,50 @@ android {
                 } else {
                     cFlags '-O2', '-DNDEBUG', '-g', '-fno-strict-aliasing'
                     cppFlags '-O2', '-DNDEBUG', '-g', '-fno-strict-aliasing'
+                    // xenia's own optimization block (-O3, -finline-functions,
+                    // -funroll-loops, ThinLTO) is entirely wrapped in
+                    // $<$<CONFIG:Release>:...>. AGP's externalNativeBuild does
+                    // not pass CMAKE_BUILD_TYPE, so the cache value is empty,
+                    // $<CONFIG:Release> never matches, and none of those flags
+                    // have ever been applied -- every build has run at the -O2
+                    // above with no LTO. Naming the config is what turns that
+                    // block on. NDEBUG already comes from cFlags, so this does
+                    // not change assert semantics.
+                    arguments '-DCMAKE_BUILD_TYPE=Release'
                 }
                 if (System.getenv('USE_CCACHE') == 'true') {
                     arguments '-DCMAKE_C_COMPILER_LAUNCHER=ccache',
                               '-DCMAKE_CXX_COMPILER_LAUNCHER=ccache'
+                }
+            }
+        }
+    }
+
+    // Keep the debug variant debuggable.
+    //
+    // defaultConfig's -DCMAKE_BUILD_TYPE=Release applies to *every* variant,
+    // including debug, so without this a debug build would be a full -O3 +
+    // ThinLTO build: an order of magnitude slower to link, and with -O3's
+    // inlining and -fomit-frame-pointer the stack traces and stepping that
+    // make a debug build useful largely stop working.
+    //
+    // `arguments` accumulate (MergedExternalNativeCmakeOptions.append does
+    // arguments.addAll) and CMake keeps the last -DCMAKE_BUILD_TYPE it is
+    // given, so this value lands after the defaultConfig one and wins.
+    //
+    // RelWithDebInfo rather than Debug on purpose: it is -O2 -g -DNDEBUG,
+    // which is exactly the flag set the defaultConfig cFlags above already
+    // produce today, so debug builds keep their current semantics and their
+    // -g, while still getting a *named* config so $<CONFIG:Debug> no longer
+    // silently matches nothing. Debug would additionally define DEBUG and
+    // enable the gdbstub's assert paths.
+    if (!hwasan) {
+        buildTypes {
+            debug {
+                externalNativeBuild {
+                    cmake {
+                        arguments '-DCMAKE_BUILD_TYPE=RelWithDebInfo'
+                    }
                 }
             }
         }
