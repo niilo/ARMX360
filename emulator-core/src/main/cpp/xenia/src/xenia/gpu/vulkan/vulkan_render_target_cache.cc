@@ -139,9 +139,9 @@ DEFINE_bool(
     "range reaches about 65000, well past 7e3's [0, 32), so bright HDR above "
     "1.0 is unaffected, and 7e3 is itself unsigned, so negative values were "
     "already clamped rather than stored.\n"
-    " - Multisampled 7e3 targets additionally require the driver to expose "
-    "B10G11R11 as a multisample color attachment, which is not guaranteed "
-    "even where the format is supported at all.\n"
+    " - Multisampled 7e3 targets additionally require the device to report "
+    "multisample framebuffer support, which is the same device-level "
+    "capability every other MSAA path in the emulator already depends on.\n"
     "Enable per game only, in config/<TITLEID>.config.toml under a [Vulkan] "
     "section, after checking the title still looks right with it on. The "
     "startup log line states whether it was accepted.",
@@ -1078,15 +1078,22 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
     // of 64bpp R16G16B16A16_SFLOAT - half the bytes per pixel, at the cost of
     // the destination alpha channel and mantissa precision. Same usage set as
     // the gamma unorm16 host format: sampled for transfers and EDRAM dumps,
-    // and a blendable color attachment. Multisample attachment support is
-    // checked per-format rather than assumed, since B10G11R11 is widely
-    // optional as an attachment.
+    // and a blendable color attachment.
+    //
+    // There is deliberately no per-format multisample feature test here:
+    // VkFormatFeatureFlags has no "color attachment multisample" bit (it is not
+    // a thing - an earlier version of this code referenced
+    // VK_FORMAT_FEATURE_COLOR_ATTACHMENT_MULTISAMPLE_BIT, which does not exist
+    // and did not compile). Multisample attachment capability is reported per
+    // DEVICE, in VkPhysicalDeviceProperties.framebufferColorSampleCounts, and
+    // is already checked above as msaa_2x_attachments_supported_ /
+    // msaa_2x_no_attachments_supported_. Gating the format on that device-level
+    // capability is both the correct query and consistent with every other MSAA
+    // decision in this file.
     constexpr VkFormatFeatureFlags kB10G11R11Features =
         VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
         VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
         VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
-    constexpr VkFormatFeatureFlags kB10G11R11MultisampleFeatures =
-        VK_FORMAT_FEATURE_COLOR_ATTACHMENT_MULTISAMPLE_BIT;
     VkFormatProperties b10g11r11_properties;
     ifn.vkGetPhysicalDeviceFormatProperties(
         physical_device, VK_FORMAT_B10G11R11_UFLOAT_PACK32,
@@ -1095,9 +1102,7 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
     // hdr_render_target_as_b10g11r11 so it can be overridden per-game.
     b10g11r11_7e3_format_supported_ =
         (b10g11r11_properties.optimalTilingFeatures & kB10G11R11Features) ==
-            kB10G11R11Features &&
-        (b10g11r11_properties.optimalTilingFeatures &
-         kB10G11R11MultisampleFeatures) == kB10G11R11MultisampleFeatures;
+        kB10G11R11Features;
     XELOGGPU(
         "VulkanRenderTargetCache: B10G11R11_UFLOAT {} - guest 7e3 render "
         "targets will use {}",
