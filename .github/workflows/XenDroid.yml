@@ -178,6 +178,79 @@ jobs:
       run: echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
     ##################################################################
+    # JVM unit tests
+    ##################################################################
+    # Deliberately BEFORE the release APK build, and the ordering is the
+    # whole point. Two very different failures have to stay tellable apart:
+    #
+    #   * a unit test fails      -> the Kotlin frontend changed wrong
+    #   * the build fails        -> nearly always unrelated toolchain drift
+    #                                (NDK/CMake install, ccache, network)
+    #
+    # If the build ran first and broke, the job would stop before a single test
+    # executed and the report would say "build failed" -- the test result would
+    # be UNKNOWN, not green, and the second failure would be invisible. Running
+    # the (fast, JVM-only) tests first means a test failure is reported as a
+    # test failure and a toolchain failure is still reported as a toolchain
+    # failure, but neither can hide the other. It also means a genuinely red
+    # test aborts the run in a couple of minutes instead of after a full native
+    # build.
+    #
+    # `:app:testDebugUnitTest`, not `testReleaseUnitTest`:
+    #   - release has minifyEnabled + shrinkResources (app/build.gradle:86-91).
+    #     R8 only rewrites the APK -- AGP does NOT run unit tests against the
+    #     minified output unless testProguardFiles is configured, so a release
+    #     test run would exercise the same 14 classes with none of the risk R8
+    #     adds, while paying to build the release variant.
+    #   - debug is the variant Android Studio's "Run Unit Tests" targets, so
+    #     this is exactly what a developer runs before pushing.
+    #
+    # -PgitHash mirrors the assembleRelease invocation below. It does not
+    # change any assertion (it only feeds BuildConfig.VERSION_NAME), but it
+    # keeps both Gradle invocations' inputs identical so the build cache and
+    # the configured project model are shared instead of built twice.
+    #
+    # KNOWN LIMITATION, unchanged by this step: "Check APK keystore" is the
+    # first step in the job, so a pull request from a fork (no secrets) still
+    # dies before reaching these tests. Making tests secret-independent would
+    # mean moving them into their own job -- not done here because it would
+    # duplicate the SDK/NDK setup that dominates this job's non-build time.
+    - name: JVM unit tests
+      run: |
+        chmod +x gradlew
+
+        ./gradlew :app:testDebugUnitTest \
+          -PgitHash=${{ steps.git.outputs.hash }} \
+          --build-cache \
+          --parallel \
+          --max-workers=$(nproc) \
+          --no-daemon
+
+    ##################################################################
+    # Android lint (advisory)
+    ##################################################################
+    # continue-on-error on purpose. Lint has never run in this pipeline and
+    # there is no lint baseline checked in, so the first run is expected to
+    # report pre-existing issues that have nothing to do with the change under
+    # test. A blocking lint gate added on the same day it is introduced is a
+    # guaranteed-red gate, and a red gate nobody is watching is worse than no
+    # gate: it teaches everyone to ignore red. Reported, never blocking, until
+    # there is a baseline to diff against.
+    #
+    # Placed next to the unit tests because both run against the :app debug
+    # variant, so this reuses the classes those tests just compiled rather than
+    # recompiling them.
+    - name: Android lint (advisory)
+      continue-on-error: true
+      run: |
+        ./gradlew :app:lintDebug \
+          -PgitHash=${{ steps.git.outputs.hash }} \
+          --build-cache \
+          --parallel \
+          --max-workers=$(nproc) \
+          --no-daemon
+
+    ##################################################################
     # Build
     ##################################################################
     - name: Build Release APK
