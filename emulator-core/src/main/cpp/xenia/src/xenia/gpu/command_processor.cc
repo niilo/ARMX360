@@ -605,13 +605,20 @@ void CommandProcessor::FrameStatsEndSwap(uint64_t begin_ns) {
     s.last_report_ns = now;
   } else if (now - s.last_report_ns >= 1000000000ull && s.frames) {
     const double f = static_cast<double>(s.frames);
+    // Pace the throttle fields onto the same line as the rest of the breakdown.
+    // throttle_frames can be 0 (framerate_limit = 0 -> no pacing at all), so
+    // divide by max(1, ...) rather than by the frame count.
+    const double tf = static_cast<double>(s.throttle_frames ? s.throttle_frames : 1);
     XELOGI(
         "GpuFrame: {} frames, interval avg={:.1f}ms max={:.1f}ms | per frame: "
         "exec={:.1f}ms draws={:.0f} draw={:.1f}ms swap={:.1f}ms "
-        "stall={:.1f}ms",
+        "stall={:.1f}ms | pace: n={} overshoot avg={:.2f}ms max={:.2f}ms "
+        "resyncs={}",
         s.frames, s.interval_ns / f / 1e6, s.interval_max_ns / 1e6,
         s.exec_ns / f / 1e6, s.draws / f, s.draw_ns / f / 1e6,
-        s.swap_ns / f / 1e6, s.stall_ns / f / 1e6);
+        s.swap_ns / f / 1e6, s.stall_ns / f / 1e6, s.throttle_frames,
+        s.throttle_frames ? s.throttle_overshoot_ns / tf / 1e6 : 0.0,
+        s.throttle_overshoot_max_ns / 1e6, s.throttle_resyncs);
     const uint64_t keep_swap = s.last_swap_ns;
     s = FrameTimeStats();
     s.last_swap_ns = keep_swap;
@@ -621,11 +628,53 @@ void CommandProcessor::FrameStatsEndSwap(uint64_t begin_ns) {
 
 void CommandProcessor::ThrottlePresentation() {
   // Host frame rate limiting based on framerate_limit cvar.
-  const uint32_t framerate_limit = cvars::framerate_limit;
+  //
+  // 0 stays LITERALLY unlimited, deliberately. Redefining 0 as "auto" was
+  // considered and rejected: 0 is user-visible in three shipped places that
+  // all say "unlimited" in so many words (default_config.toml, the in-app
+  // SettingsSchema dropdown "0" -> "Unlimited", and the imgui performance
+  // dialog's "0 = unlimited" plus its "Unlimited" notification), none of which
+  // this change can update coherently. Repurposing the value would leave the UI
+  // promising a free-run the engine no longer performs. Instead the ENERGY
+  // goal is met where it is actually lost - the shipped default, which was 0 -
+  // by moving it to 60 (gpu_flags.cc, UPDATE_from_uint32). A user who genuinely
+  // wants an unpaced run still types 0 and gets one.
+  uint32_t framerate_limit = cvars::framerate_limit;
 
   if (framerate_limit == 0) {
     // No host frame limiting
     return;
+  }
+
+  // Auto mode: never pace faster than the guest's own refresh rate. This is the
+  // one piece of cadence adaptation that is both knowable host-side and safe:
+  // GetGuestVblankRateHz() is a fact about the emulated machine (50Hz PAL /
+  // 60Hz NTSC), not a guess about the title, so it cannot oscillate. Presenting
+  // 60Hz content at 90 or 120 is invisible on the panel and pure heat on a
+  // handheld, and a literal 60 on a PAL title is simply the wrong number.
+  //
+  // Deliberately NOT here: inferring whether the title is internally 30fps and
+  // dropping the target to match. See the task notes - the host cannot measure
+  // that reliably, the guest paces itself off vblanks we already cap at 60, and
+  // a mis-detected halving is far worse than the energy it would save. Games
+  // that are internally 30fps already present at 30 because the guest only
+  // raises the swap packet that often; there is nothing for us to throttle.
+  if (cvars::framerate_limit_auto) {
+    const uint32_t guest_hz = GetGuestVblankRateHz();
+    if (framerate_limit > guest_hz) {
+      // Log once per distinct clamp so the cap in effect is never a mystery in
+      // a log, and so a user who set 120 understands why they see 60.
+      const uint32_t effective = guest_hz;
+      if (last_logged_framerate_clamp_ != effective) {
+        last_logged_framerate_clamp_ = effective;
+        XELOGI(
+            "GPU: framerate_limit {} requested, pacing at the guest refresh "
+            "rate {} FPS (framerate_limit_auto). Set framerate_limit_auto=false "
+            "to pace literally.",
+            framerate_limit, effective);
+      }
+      framerate_limit = effective;
+    }
   }
 
   const double target_duration_ms =
@@ -635,44 +684,88 @@ void CommandProcessor::ThrottlePresentation() {
   const uint64_t target_duration_ticks = static_cast<uint64_t>(
       target_duration_ms * static_cast<double>(tick_freq) / 1000.0);
 
-  // Spin until target duration has elapsed
+  // Absolute-deadline pacing, matching the guest vblank frame limiter in
+  // graphics_system.cc:212-244.
+  //
+  // The anchor (last_swap_time_) advances by EXACTLY one period per presented
+  // frame, and is only rewritten to "now" when we are more than two periods
+  // behind. The deadline is therefore computed ONCE, before the loop, and the
+  // sleep is derived from that fixed value - never from a freshly sampled
+  // "remaining" time. Recomputing the remainder against a moving clock is what
+  // lets oversleep accumulate: a sleep that lands late is measured from the late
+  // reading, so the leftover is recomputed against an already-drifted anchor
+  // and the error survives into the following frame instead of being absorbed.
+  // On a loaded device the presented cadence then sags below the target. Deriving
+  // the sleep from a fixed deadline makes overshoot self-correcting: a late wake
+  // shortens the next frame's sleep rather than shifting the whole grid later.
+  //
+  // The loop still re-reads the clock on every pass on purpose. NanoSleep may
+  // return short (the debugger can suspend this thread, the scheduler can
+  // preempt it), and re-checking is the only way to notice. What changed is the
+  // DEADLINE, not the loop structure.
+  const uint64_t deadline = last_swap_time_ + target_duration_ticks;
+
   while (true) {
     const uint64_t current_time = Clock::QueryGuestTickCount();
-    const uint64_t time_delta = current_time - last_swap_time_;
 
-    if (time_delta >= target_duration_ticks) {
-      // If we've fallen behind by more than 2 frames, reset to catch up
-      if (time_delta > target_duration_ticks * 2) {
+    if (current_time >= deadline) {
+      const uint64_t time_delta = current_time - last_swap_time_;
+
+      // If we've fallen behind by more than 2 frames, reset to catch up rather
+      // than firing a burst of back-to-back frames to re-anchor the grid.
+      const bool resynced = time_delta > target_duration_ticks * 2;
+      if (resynced) {
         last_swap_time_ = current_time;
       } else {
         last_swap_time_ += target_duration_ticks;
       }
+
+      // Telemetry: how far past the deadline did this frame actually land? This
+      // is the number that separates steady pacing from merely plausible pacing,
+      // and it is what will show on a real device whether the absolute-deadline
+      // change above actually helped.
+      if (cvars::log_gpu_frame_time_breakdown) {
+        const uint64_t overshoot_ns = static_cast<uint64_t>(
+            (static_cast<double>(current_time - deadline) * 1000000000.0) /
+            static_cast<double>(tick_freq));
+        auto& s = frame_time_stats_;
+        s.throttle_overshoot_ns += overshoot_ns;
+        if (overshoot_ns > s.throttle_overshoot_max_ns) {
+          s.throttle_overshoot_max_ns = overshoot_ns;
+        }
+        s.throttle_resyncs += resynced ? 1 : 0;
+        s.throttle_frames++;
+      }
       return;
     }
 
-    const double elapsed_ms = static_cast<double>(time_delta) /
-                              (static_cast<double>(tick_freq) / 1000.0);
-
-    const double remaining_ms = target_duration_ms - elapsed_ms;
+    // Absolute remaining time to the FIXED deadline. Floored at 1ns: a
+    // sub-nanosecond remainder would otherwise skip the sleep entirely and spin
+    // the command processor thread hot at full clock, the opposite of what a
+    // pacing wait is for.
+    const uint64_t remain_ticks = deadline - current_time;
+    const uint64_t remain_ns = std::max<uint64_t>(
+        1, static_cast<uint64_t>(
+               static_cast<double>(remain_ticks) *
+               (1000000000.0 / static_cast<double>(tick_freq))));
 #if XE_PLATFORM_WIN32
     // Sleep 90% of remaining, spin the rest for accuracy
-    const uint64_t sleep_ns =
-        static_cast<uint64_t>(remaining_ms * 1000000.0 * 0.90);
+    const uint64_t sleep_ns = static_cast<uint64_t>(remain_ns * 0.90);
     if (sleep_ns > 0) {
       xe::threading::NanoSleep(sleep_ns);
     }
 #elif XE_PLATFORM_MAC
-    // Darwin's nanosleep oversleeps by 100-500us; NanoSleepPrecise spins the
+    // Darwin's nanosleep overshoots by 100-500us; NanoSleepPrecise spins the
     // tail so 60Hz targets don't miss their frame budget.
-    const uint64_t sleep_ns = static_cast<uint64_t>(remaining_ms * 1000000.0);
-    if (sleep_ns > 0) {
-      xe::threading::NanoSleepPrecise(sleep_ns);
-    }
+    xe::threading::NanoSleepPrecise(remain_ns);
 #else
-    const uint64_t sleep_ns = static_cast<uint64_t>(remaining_ms * 1000000.0);
-    if (sleep_ns > 0) {
-      xe::threading::NanoSleep(sleep_ns);
-    }
+    // Linux/Android: plain NanoSleep, as before. NanoSleepPrecise() is
+    // deliberately NOT used here - on this platform it currently just forwards
+    // to NanoSleep (threading_posix.cc:339-341), since only the Mac path has a
+    // real spin tail. graphics_system.cc:242 calls NanoSleepPrecise on its
+    // vblank thread, which today therefore means the same plain nanosleep; if
+    // that ever grows a genuine tail, this call site should follow it.
+    xe::threading::NanoSleep(remain_ns);
 #endif
   }
 }

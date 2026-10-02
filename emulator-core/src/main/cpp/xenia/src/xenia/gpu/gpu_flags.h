@@ -19,6 +19,7 @@ DECLARE_path(dump_shaders);
 DECLARE_bool(guest_display_refresh_cap);
 
 DECLARE_uint32(framerate_limit);
+DECLARE_bool(framerate_limit_auto);
 
 void SetGuestDisplayRefreshCap(bool value);
 void SetFramerateLimit(uint32_t value);

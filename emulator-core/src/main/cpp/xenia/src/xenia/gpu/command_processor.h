@@ -274,6 +274,14 @@ class CommandProcessor {
     uint64_t stall_ns = 0;     // worker idle, waiting for ring writes
     uint64_t interval_ns = 0;  // sum of swap-to-swap intervals
     uint64_t interval_max_ns = 0;
+    // Throttle pacing (command_processor.cc ThrottlePresentation): how far past
+    // its absolute deadline each presented frame landed. Steady pacing shows a
+    // small average and a max in the low single-digit ms; a drifting loop shows
+    // a max that keeps climbing. 0 when framerate_limit is 0 (no pacing).
+    uint64_t throttle_overshoot_ns = 0;
+    uint64_t throttle_overshoot_max_ns = 0;
+    uint64_t throttle_frames = 0;
+    uint64_t throttle_resyncs = 0;  // anchor restarts (>2 periods behind)
     uint64_t last_swap_ns = 0;
     uint64_t last_report_ns = 0;
   };
@@ -663,6 +671,9 @@ class CommandProcessor {
 
   // For host frame rate limiting at IssueSwap
   uint64_t last_swap_time_ = 0;
+  // Last value framerate_limit_auto clamped to, for the once-per-value log in
+  // ThrottlePresentation. 0 = nothing clamped/logged yet.
+  uint32_t last_logged_framerate_clamp_ = 0;
 
  private:
   reg::DC_LUT_30_COLOR gamma_ramp_256_entry_table_[256] = {};

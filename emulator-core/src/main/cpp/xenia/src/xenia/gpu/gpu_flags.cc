@@ -58,7 +58,51 @@ DEFINE_uint32(
     "Guest vblanks are controlled by use_50Hz_mode (50Hz PAL, 60Hz NTSC).\n"
     "Defaults to 60 here rather than unlimited: the console never presented "
     "faster, and on a handheld the frames past the panel's refresh are heat "
-    "and battery for no visible gain.",
+    "and battery for no visible gain.\n"
+    "\n"
+    "NOTE: the shipped default_config.toml used to say 0 here, which silently "
+    "defeated the 60 above in every build (the bundled file is read over the "
+    "compiled-in default). It now says 60, and configs that still carry the old "
+    "0 are migrated on load - see the UPDATE_ below.",
+    "GPU");
+// The bundled default_config.toml shipped `framerate_limit = 0` for a long time
+// even though the compiled-in default above has been 60, because ReadConfig
+// (config.cc:214-223) loads the TOML over the DEFINE default. Every shipped
+// build therefore ran completely unpaced. UPDATE_from_uint32 moves anyone still
+// sitting on that old 0 to the real default, while leaving an explicit
+// non-zero choice (30/45/120) untouched - same mechanism and same trade-off as
+// the turnip_debug migration (vulkan_instance.cc:138).
+UPDATE_from_uint32(framerate_limit, 2026, 10, 2, 22, 0);
+
+DEFINE_bool(
+    framerate_limit_auto, true,
+    "Clamp framerate_limit to the guest's own refresh rate "
+    "(GetGuestVblankRateHz: 60Hz NTSC, 50Hz PAL).\n"
+    "Presenting faster than the console's refresh rate is never visible - the "
+    "panel cannot show it - so on a handheld those frames are pure heat and "
+    "battery. This makes the clamp automatic for the common over-shoot cases "
+    "(90/120 on a 60Hz guest) and, more importantly, gets PAL right: a literal "
+    "60 on a 50Hz title was asking for frames that could never land on time.\n"
+    "\n"
+    "This deliberately does NOT try to detect that a title is internally 30fps "
+    "and drop the target to match. That is not reliably knowable host-side: "
+    "GetGuestVblankRateHz is only ever 50 or 60 (use_50Hz_mode), and "
+    "VdQueryVideoMode reports refresh_rate from that same cvar "
+    "(xboxkrnl_video.cc:231) with a TODO for real display data - neither "
+    "carries the title's internal rate. It is also unnecessary: the throttle "
+    "runs per guest swap packet (pm4_command_processor_implement.h:818), and a "
+    "30fps title only raises that packet 30 times a second, so it already "
+    "presents at 30 with no help from us. Inferring the rate from observed "
+    "swap cadence would only add a way to misfire - a loading stall looks "
+    "exactly like a 30fps title - and oscillation between 30 and 60 is worse "
+    "for pacing than either fixed value.\n"
+    "\n"
+    "Set false to honour framerate_limit literally - needed to force 30 on a "
+    "60Hz guest, or to benchmark above the refresh rate.\n"
+    "\n"
+    "Never affects framerate_limit = 0, which stays literally unlimited: that "
+    "is an explicit request for an unpaced run and this cvar will not overrule "
+    "it.",
     "GPU");
 
 void SetGuestDisplayRefreshCap(bool value) {
