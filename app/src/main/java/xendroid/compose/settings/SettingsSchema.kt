@@ -35,6 +35,12 @@ object SettingsSchema {
                 "" to "None (no TU_DEBUG flags, GMEM)", "sysmem" to "sysmem (untiled, slower)",
                 "sysmem,nolrz" to "sysmem + nolrz (LRZ off, perf diagnostic)",
                 "sysmem,noubwc" to "sysmem + noubwc (UBWC off, perf diagnostic)"),
+            // Shared-const race workaround. 'auto' only applies it on Adreno 6xx, where it is
+            // proven; 'on' is the per-device A/B for a suspected shared-const hang elsewhere.
+            l("Vulkan", "turnip_push_consts", "Turnip push consts per stage", "auto",
+                "auto" to "auto (Adreno 6xx only)",
+                "on" to "on (force everywhere - hang diagnostic)",
+                "off" to "off (never add)"),
             b("Vulkan", "vulkan_in_pass_resolve", "In-pass EDRAM resolve", true),
             b("Vulkan", "vulkan_resolve_to_texture_promote", "Resolve-to-texture: promote", true),
             b("Vulkan", "vulkan_resolve_to_texture", "Resolve-to-texture: store", true),

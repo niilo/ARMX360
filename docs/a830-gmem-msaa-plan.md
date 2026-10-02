@@ -422,3 +422,188 @@ of the faulting frame pulled and decoded; vendor kernel tree at
 ~/mesa-turnip/graphics-kernel (gen8_0_0 = the 12MB a830-class entry;
 gen8_3_0 in the vendor gpulist is a 576KB-GMEM small SKU, NOT a830 —
 corrects the old memory note).
+
+---
+
+## Addendum 6 — the XenDroid half is bounded; the shared-const knob is now reachable
+
+### Environment this was written from (and what it therefore cannot claim)
+
+Authored **without** the mesa tree and **without** an a830. Verified on the
+authoring host: `cmake`/`ninja`/`java`/`gradle` all absent, no
+`ANDROID_HOME`, no `~/mesa-turnip`, no `freedreno/gens`, so no `tu_device.cc`,
+`fd6_gmem_cache.h` or `freedreno_devices.py` was readable. Nothing here is a
+driver patch and nothing here was measured. Everything in this addendum is
+either read out of this repo with file:line, or read off a real attached
+**a7xx** device (not a830) via `xe.log`.
+
+### Finding 1 — the `push_consts_per_stage` gate never fires on a7xx or gen8, and could not have
+
+`vulkan_instance.cc` gates on `AdrenoGeneration() == 6`, and `AdrenoGeneration()`
+is `strpbrk(node,"0123456789")` then `atoi(...)/100` on
+`/sys/class/kgsl/kgsl-3d0/gpu_model` (the comment above it already records this
+trap). Measured node values, and what that arithmetic makes of them:
+
+| device | `gpu_model` node | `AdrenoGeneration()` | `== 6`? |
+|---|---|---|---|
+| Adreno 740 (test device, SD 8 Gen 2) | `AdrenoA32` | **0** | no |
+| Adreno 830 | `3458d5f` | **34** | no |
+| Adreno 650 | `61705c55` | **617** | no |
+| hypothetical `Adreno 650` | `Adreno 650` | 6 | yes |
+
+### Finding 2 — XenDroid does not use push constants for guest drawing at all
+
+This is the load-bearing structural fact, and it reframes the whole
+shared-const theory. The guest graphics pipeline layout is created with
+`pushConstantRangeCount = 0; pPushConstantRanges = nullptr`
+(`vulkan_command_processor.cc:3666-3667`). Guest shader constants reach the
+hardware as **five descriptor-set uniform buffers** — `kConstantBufferSystem`,
+`FloatVertex`, `FloatPixel`, `BoolLoop`, `Fetch`
+(`spirv_shader_translator.h:367-374`), filled per draw from
+`uniform_buffer_pool_` (`vulkan_command_processor.cc:7820-7957`), optionally as
+`UNIFORM_BUFFER_DYNAMIC` (`vulkan_command_processor.h:1190-1200`).
+
+Consequence: **`push_consts_per_stage` cannot affect guest shader constants**,
+because guest constants are never push constants. What it *can* affect is
+Xenia's own scaffolding passes, which are the only push-constant users in the
+GPU path: in-pass resolve (fragment, `vulkan_render_target_cache.cc:2256`),
+direct host resolve (compute, `:2634/:2638`), host depth store (`:1057`),
+EDRAM transfer/dump (`:7621`, `:7661`, `:8349`-`:8381`, `:9180`), texture-cache
+load (`vulkan_texture_cache.cc:2137-2150`), and the present-path helpers
+(swap/gamma `vulkan_command_processor.cc:2806`, FXAA `:2937`, resolve downscale
+`:5469`).
+
+That is consistent with the decode in addendum 4: the frozen IB2s are
+`SP_SHARED_CONSTANT_GFX` writes in **post-pass marker-0x8 sections**, i.e. after
+the GMEM MSAA pass — which is exactly where Xenia's resolve/dump scaffolding
+sits, not where game draws are. It does not prove the mechanism (the driver's
+own internal constant traffic is still a candidate), but it does mean the
+Xenia-side lever is *"how much shared-const traffic does the scaffolding emit,
+and when"*, not *"how the game's constants are delivered"*.
+
+### Honest verdict on the split
+
+- **Xenia-fixable, and now reachable:** nothing about the *wedge* — that is a
+  driver ordering bug between the shared-constant path and concurrent
+  binning, and Xenia cannot fence the GPU's internal threads. What Xenia can do
+
+### Change made (this repo, cvar-gated, default behaviour UNCHANGED)
+
+`vulkan_instance.cc` gains **`turnip_push_consts`** (`auto`|`on`|`off`,
+default `auto`). `auto` reproduces the old `== 6` gate exactly, so **no
+existing device changes behaviour**; `on` forces the flag everywhere so the
+a830 hypothesis becomes a **one-line config A/B instead of a rebuild**. Wired
+into `SettingsSchema.kt` (list choice), `SettingDescriptions.kt`, and
+`default_config.toml`, so it is settable per-game via `config/<TITLEID>.config.toml`
+and from the in-app UI. The decision is now logged unconditionally, and
+`AdrenoGeneration()`'s real `gpu_model` is logged on every launch, so
+"auto did nothing because the node didn't parse" stops being indistinguishable
+from "the flag was applied and didn't help".
+
+**This does not widen the gate on purpose.** Widening to gen8 on the strength of
+a *localized but unattributed* wedge would tax every a7xx/gen8 owner with a real
+shader-constant bandwidth cost on the strength of a theory. Measure first (step 1
+below), then widen if it earns its keep.
+
+### Incidental-bug triage — all three are driver-only
+
+Grepped the whole repo (excluding `docs/`) for each:
+
+| bug | lives in | in this repo? |
+|---|---|---|
+| `__calc_gmem_cache_offsets` unsigned underflow (5 reservations, no floor; GMEM < ~2.26 MB wraps to ~4 GB) | `fd6_gmem_cache.h` | **no** — 0 hits outside docs |
+| VSC initial prim pitch too small / doubling overruns before detection | `tu_device.cc` | **no** — 0 hits outside docs |
+| a830 misfiled under `a8xx_gen1`, no per-device GMEM/CCU tuning | `freedreno_devices.py` | **no** — 0 hits outside docs |
+
+None can be fixed, patched or even reviewed from here: the files do not exist in
+this tree and there is no vendored copy. Nothing was written against them. All
+three remain **open, driver-side, and unowned by this repo** — they should be
+filed as upstream patches by whoever holds `~/mesa-turnip`, in the order the
+plan already gives (underflow guard + a810 audit → VSC pitch → a830 device
+config → MSAA fix). They are independent of the MSAA wedge and worth landing
+regardless of how the wedge resolves.
+
+### Runbook — for whoever has BOTH the mesa tree AND an a830
+
+Ordered cheapest-first; each step states what it *proves or refutes*. Steps 0–3
+need only the device. Step 4 needs the mesa tree. Do not skip to step 4 — it is
+the expensive artifact and steps 0–3 may make it unnecessary.
+
+**Step 0 — re-baseline (no code).** Confirm the installed APK hash, clear
+leftover `debug.mesa.tu.*` properties, reproduce the full baseline signature
+(`XD gmem:` MSAA pass → EPROTO → SIGABRT). Verify from `xe.log` that
+`Set TU_DEBUG=` shows exactly the intended flags and that the new
+`turnip_push_consts='...' -> push_consts_per_stage ...` line reads as expected.
+*Proves:* the fault still exists on this build. A clean baseline invalidates
+everything below.
+
+**Step 1 — the armed discriminator, now one config line.** Set
+`turnip_push_consts = "on"` (global config or `config/4D5307DF.config.toml`),
+launch, watch for the fault.
+- **Fault gone → shared-const race is the mechanism.** Land the driver fix
+  (per-stage shared consts, or fence shared-const updates against the
+  concurrent pipe) *and* widen the auto-gate to gen8 in `vulkan_instance.cc`.
+- **Fault persists → the a650 precedent does not transfer to gen8.** Do **not**
+  widen the gate. Go to step 2.
+*Proves/refutes:* the addendum-4 hypothesis, which is currently localized but
+unattributed. This is the single highest-value step in the whole plan and costs
+one launch and no build.
+
+**Step 2 — the free second discriminator.** `debug.mesa.tu.debug=nocb`
+(no concurrent binning). Fault gone → the bug is in the concurrent-binning
+rendezvous, not in shared-const delivery specifically; together with step 1 this
+separates the two. Fault persists → the trigger is neither shared consts nor
+binning concurrency, and the remaining suspects are back to the GMEM MSAA
+rasterization path itself.
+
+**Step 3 — quantify the Xenia-side shared-const traffic (no driver change
+needed).** Count Xenia's own post-pass push-constant writes per frame from the
+source: in-pass resolve (`:2256`, only when `vulkan_in_pass_resolve=true`),
+direct host resolve (`:2634`/`:2638`), host depth store, EDRAM transfer/dump,
+texture load. Then A/B the one lever that removes a mid-pass fragment push
+constant: `vulkan_in_pass_resolve = false` — but note its C++ default is
+*already* `false` (`vulkan_render_target_cache.cc:90`), so on a default config
+this changes nothing; force it **on** first to confirm it is active at all.
+*Proves:* how much shared-const traffic Xenia contributes. If it is a handful of
+writes per frame against thousands of draws, the Xenia-side mitigation in
+Finding 2 is not worth building and the fault is entirely driver-internal.
+
+**Step 4 — only now: stream replay bisect.** The reproducer matrix is already
+clean (addendum 5), so the trigger is in xenia's stream. Build the
+purpose-built kgsl replayer (rd parser + `IOCTL_KGSL_GPU_COMMAND` at the probed
+deterministic 0x4000000000 kgsl VA base, ~2 GB fake address space), replay the
+captured faulting IB1s, then truncate/NOP progressively — the wedge packet falls
+out mechanically. **This is the most expensive artifact in the plan and belongs
+to whoever has the mesa tree**; it is deliberately not started here.
+
+### Two corrections to the record
+
+- The doc's line "XenDroid auto-applies `TU_DEBUG=push_consts_per_stage` ONLY
+  for a6xx (`vulkan_instance.cc` checks gpu_model/100==6)" is right about the
+  code and wrong about the effect: on a7xx/gen8 the check cannot succeed at all
+  (Finding 1), so it is not a gate drawn too narrow — it is a gate fed by a
+  parser that returns 0/34/617. Fixing the parse is a prerequisite for *any*
+  generation-gated policy, including a future a6xx fix.
+- `SettingsSchema.kt:37` declares `vulkan_in_pass_resolve` default `true` while
+  the C++ default is `false` (`vulkan_render_target_cache.cc:90`). Pre-existing
+  divergence, flagged not fixed — the UI default would silently enable a
+  feature the binary does not enable by default.
+
+  is reduce or relocate its own post-pass shared-const writes (e.g. move the
+  in-pass resolve's fragment push constants into the same UBO mechanism the
+  guest path already uses, so no shared-const write is emitted mid-pass at
+  all). That is a *plausible mitigation*, not a fix, and it is a real code
+  change worth trying only after the driver-side arm below is measured.
+- **Driver-only:** the concurrent-binning/shared-const rendezvous itself, the
+  CCU geometry, the GMEM layout, the VSC pitch. None of it is reachable from
+  this repo — see the triage table below.
+
+
+So the workaround applies **only** when the node happens to read `Adreno NNN`.
+On a7xx/gen8 it is not merely "gated out" — the parse never yields 6/7/8 at
+all. Widening `== 6` to `>= 6` would therefore change **nothing** on those
+parts; it is a no-op dressed as a fix. Confirmed at runtime on the attached
+device (`xe.log`, a real launch): `Set TU_DEBUG=sysmem for the Turnip Vulkan
+driver` — bare `sysmem`, and `grep -c push_consts xe.log` = **0**. The
+workaround was never applied there.
+

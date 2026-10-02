@@ -111,6 +111,7 @@ object SettingDescriptions {
         "trace_function_references" to "Records function address references during JIT compilation for developer analysis",
         "trace_gpu_stream" to "Trace all GPU command packets for debugging; very slow",
         "turnip_debug" to "Comma-separated TU_DEBUG flags for the Turnip driver; e.g. sysmem disables tiled rendering (Turnip only)",
+        "turnip_push_consts" to "Whether to add push_consts_per_stage to TU_DEBUG. 'auto' applies the shared-const race workaround on Adreno 6xx only (where it is proven); 'on' forces it everywhere to test a suspected shared-const hang on another device",
         "use_50Hz_mode" to "Runs PAL games in 50Hz (PAL-50) mode instead of 60Hz",
         "use_dedicated_xma_thread" to "Decodes XMA audio on its own thread; disabling may sound better but costs performance",
         "user_country" to "Console country/region ID reported to games",

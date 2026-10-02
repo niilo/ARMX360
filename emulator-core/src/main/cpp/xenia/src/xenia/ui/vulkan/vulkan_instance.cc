@@ -52,7 +52,16 @@ extern std::string g_native_lib_dir;
 // to be known before the driver library loads.
 namespace {
 
-// Adreno generation (6 for a6xx), 0 when the KGSL model node is unreadable.
+// Adreno generation (6 for a6xx), 0 when the KGSL model node yields no digits.
+//
+// TRAP: the model node is NOT reliably "Adreno 740". Measured on real devices it
+// carries a codename or a hex id, e.g. "AdrenoA32" (Adreno 740 / SD 8 Gen 2),
+// "3458d5f" (Adreno 830), "61705c55" (Adreno 650). strpbrk finds the FIRST digit
+// anywhere, so those parse to 0 / 34 / 617 - never the 6/7/8 the callers compare
+// against. The result is only meaningful when the node reads like "Adreno 740".
+// Logged unconditionally so a device's real value is visible in its own log
+// rather than needing a repro session; the parsed generation is reported too,
+// since "0" is overloaded (no digits vs. genuinely unparseable).
 int AdrenoGeneration() {
   char gpu_model[64] = {};
   if (FILE* f = fopen("/sys/class/kgsl/kgsl-3d0/gpu_model", "r")) {
@@ -62,7 +71,16 @@ int AdrenoGeneration() {
     fclose(f);
   }
   const char* model_digits = strpbrk(gpu_model, "0123456789");
-  return model_digits ? atoi(model_digits) / 100 : 0;
+  const int generation = model_digits ? atoi(model_digits) / 100 : 0;
+  std::string model = gpu_model;
+  while (!model.empty() &&
+         (model.back() == '\n' || model.back() == '\r')) {
+    model.pop_back();
+  }
+  XELOGI("KGSL gpu_model='{}' -> AdrenoGeneration()={} (reliable only for an"
+         " 'Adreno NNN' node; 0 means no leading digits)",
+         model, generation);
+  return generation;
 }
 
 std::string SystemProperty(const char* name) {
@@ -118,6 +136,23 @@ DEFINE_string(
         "rather than hidden. Empty leaves TU_DEBUG unset.",
         "Vulkan");
 UPDATE_from_string(turnip_debug, 2026, 7, 24, 12, "");
+
+DEFINE_string(
+    turnip_push_consts, "auto",
+    "Controls whether 'push_consts_per_stage' is added to TU_DEBUG, which makes "
+    "Turnip deliver Vulkan push constants per shader stage instead of sharing one "
+    "copy across stages.\n"
+    "'auto' (the default) adds it only on Adreno 6xx, where Turnip's shared-const "
+    "delivery is known-bad (proven by the a650 '4 squares' race). 'on' forces it "
+    "on any device, 'off' never adds it.\n"
+    "Set 'on' to test whether a device hangs from the same shared-const race: the "
+    "symptom is a GPU hang/device-loss that a later render-pass prologue reports, "
+    "not a crash at the shared-const write itself. If 'on' clears a hang, the "
+    "driver-side bug is real and a generation-gated auto-apply is warranted; if it "
+    "does not, leave 'auto' - the flag costs shader-constant bandwidth when it is "
+    "not needed. 'off' does NOT strip the flag if you wrote it into turnip_debug "
+    "yourself.",
+    "Vulkan");
 
 DEFINE_string(
     fd_dev_features, "",
@@ -190,12 +225,47 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
     // before the driver is loaded. Default "sysmem" forces untiled rendering,
     // which avoids a class of Adreno GPU hangs (device-loss).
     std::string tu_debug = cvars::turnip_debug;
-    // Adreno 6xx: Turnip's shared-consts push delivery is broken there.
-    if (tu_debug.find("push_consts_per_stage") == std::string::npos &&
-        AdrenoGeneration() == 6) {
+    // Turnip's shared-consts push delivery is broken on Adreno 6xx (the a650
+    // '4 squares' race), so 'auto' applies the workaround there and nowhere else.
+    //
+    // The generation gate is deliberately NOT widened on one device's evidence:
+    // the same shared-const-vs-concurrent-binning wedge is suspected on gen8
+    // (docs/a830-gmem-msaa-plan.md addendum 4) but has never been shown to be
+    // the cause there - the wedge is only localized, not attributed. Widening
+    // the gate on an unproven theory would silently tax every a7xx/gen8 owner
+    // with a real shader-constant bandwidth cost. turnip_push_consts='on' makes
+    // the test a one-config-line A/B instead of a rebuild, so the decision can
+    // be made per device on measurement instead of per code review on theory.
+    //
+    // Note the generation is unreliable off a6xx: AdrenoGeneration() only
+    // parses nodes shaped like 'Adreno NNN' (see its comment), so on a7xx/gen8
+    // it returns 0 and 'auto' can never match them anyway. That is a second
+    // reason not to widen the comparison without fixing the parse first.
+    // Probed unconditionally (not just inside the a6xx branch) so the log always
+    // carries this device's real gpu_model and parsed generation: with
+    // turnip_push_consts='on' the generation is not consulted at all, and that is
+    // exactly the run in which the human still needs to know what was detected.
+    const int adreno_generation = AdrenoGeneration();
+    const std::string push_consts = cvars::turnip_push_consts;
+    const bool push_consts_already_set =
+        tu_debug.find("push_consts_per_stage") != std::string::npos;
+    bool add_push_consts = false;
+    if (push_consts == "on") {
+      add_push_consts = true;
+    } else if (push_consts != "off" && !push_consts_already_set) {
+      add_push_consts = adreno_generation == 6;
+    }
+    if (add_push_consts && !push_consts_already_set) {
       tu_debug += tu_debug.empty() ? "push_consts_per_stage"
                                    : ",push_consts_per_stage";
     }
+    // Logged unconditionally: 'auto' silently doing nothing on a device whose
+    // gpu_model does not parse is otherwise indistinguishable from the flag
+    // having been applied and had no effect.
+    XELOGI("turnip_push_consts='{}' -> push_consts_per_stage {}",
+           push_consts,
+           push_consts_already_set ? "already in turnip_debug, left as-is"
+                                   : (add_push_consts ? "ADDING" : "not added"));
     if (!tu_debug.empty()) {
       setenv("TU_DEBUG", tu_debug.c_str(), 1);
       XELOGI("Set TU_DEBUG={} for the Turnip Vulkan driver", tu_debug);

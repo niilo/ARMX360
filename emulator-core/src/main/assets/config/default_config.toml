@@ -325,6 +325,7 @@ internal_display_resolution_y = 720               	# Custom height. See internal
 [Vulkan]
 adrenotools_force_max_clocks = false              	# Custom Driver Force Max Clocks
 turnip_debug = "sysmem"                           	# TU_DEBUG flags for the Turnip (Mesa freedreno) Vulkan driver. 'sysmem' forces untiled rendering, avoiding a class of Adreno GPU hangs (device-loss). Empty leaves TU_DEBUG unset.
+turnip_push_consts = "auto"                       	# Whether to add 'push_consts_per_stage' to TU_DEBUG. 'auto' adds it only on Adreno 6xx, where Turnip's shared-constant delivery is known-bad; 'on' forces it on every device (a per-device A/B for a suspected shared-const hang elsewhere); 'off' never adds it.
 vulkan_allow_present_mode_fifo_relaxed = true     	# When available, allow the relaxed first-in-first-out presentation mode (3rd priority), which causes waiting for host display vertical sync, but may present with tearing if frames don't meet the host display refresh rate.
 vulkan_allow_present_mode_immediate = true        	# When available, allow the immediate presentation mode (1st priority), offering the lowest latency with the possibility of tearing in certain cases, and, depending on the configuration, variable refresh rate.
 vulkan_allow_present_mode_mailbox = true          	# When available, allow the mailbox presentation mode (2nd priority), offering low latency without the possibility of tearing.
