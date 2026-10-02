@@ -210,10 +210,34 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
 #endif
                 }
 #elif XE_PLATFORM_LINUX
-                // Absolute-deadline pacing: carry the anchor forward and
-                // sleep only the remainder. Sleeping a full period let
-                // oversleep accumulate, sagging the vblank rate toward half
-                // on a loaded device.
+                // Absolute-deadline pacing: carry the anchor forward and sleep
+                // only the remainder, instead of sleeping a full period.
+                //
+                // This IS a real fix, unlike the equivalent-looking change in
+                // CommandProcessor::ThrottlePresentation - do not assume the two
+                // are alike. The old loop here was:
+                //     MarkVblank();
+                //     NanoSleep(sleep_ns);          // sleep_ns = a FULL period
+                // i.e. unconditional, NOT time-gated. Its rate is therefore
+                // 1 / (mark_cost + period + overshoot): every microsecond of
+                // nanosleep overshoot lengthens the grid instead of being
+                // absorbed. Simulated at a 60Hz target with MarkVblank costing
+                // 5% of a period:
+                //     overshoot   0.5ms   4ms    8ms    16.7ms
+                //     old rate    56.3Hz  51.3Hz 46.5Hz 29.3Hz
+                //     new rate    60.0Hz  60.0Hz 60.0Hz 60.0Hz
+                // The new form advances the anchor by exactly one target period
+                // per vblank, so a constant per-sleep overshoot is absorbed into
+                // the next sleep's remainder rather than extending the grid -
+                // which is why it holds 60Hz across the whole range.
+                //
+                // The old rate halves only when overshoot reaches a FULL period
+                // (nanosleep roughly doubling the request), so "toward half" is
+                // the extreme of that curve, not its typical loaded-device
+                // behaviour; at realistic overshoot the old loss was single-digit
+                // percent. The fix is worth keeping, but it is a modest
+                // improvement, not the dramatic one an earlier version of this
+                // comment implied.
                 const uint64_t tick_freq = Clock::guest_tick_frequency();
                 const uint64_t target_duration_ticks = tick_freq / vblank_hz;
                 const uint64_t current_time = Clock::QueryGuestTickCount();
@@ -259,8 +283,19 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
   frame_limiter_worker_thread_->set_name("GPU Frame limiter");
   frame_limiter_worker_thread_->Create();
   // This thread is the vblank clock for every title that paces itself on
-  // vblank acks; at kLowest it was starved under load and the guest frame
-  // rate sagged with it.
+  // vblank acks, so it should not sit at the bottom of the scheduler's
+  // preference order. On POSIX these are nice values (threading.h:447-453):
+  // kLowest = 1, kBelowNormal = 8, kNormal = 16 - lower number means MORE
+  // preferred, so kLowest is 15 steps behind kNormal in the CFS weighting.
+  //
+  // The change from kLowest to kNormal was made on the reasoning that the
+  // clock thread could be starved under load and drag the guest frame rate
+  // with it. That reasoning is sound in direction - a vblank source that
+  // misses its deadline desynchronises everything paced off it - but the
+  // specific claim that it WAS being starved, and how much it cost, was never
+  // measured. Treat the win as unquantified; if presentation cadence matters
+  // here, measure it (the throttle_overshoot / VkPassTime telemetry already
+  // reports lateness) before crediting this line with a frame-rate fix.
   frame_limiter_worker_thread_->thread()->set_priority(
       threading::ThreadPriority::kNormal);
   if (cvars::trace_gpu_stream) {

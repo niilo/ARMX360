@@ -707,8 +707,10 @@ void CommandProcessor::ThrottlePresentation() {
   // rather than being spread across three float conversions. If pacing
   // genuinely sags on a loaded device, the cause is elsewhere - most likely
   // the guest not reaching the swap packet, or the vblank thread in
-  // graphics_system.cc, whose own comments carry the same unverified
-  // oversleep claim and deserve the same scrutiny.
+  // graphics_system.cc. That thread's absolute-deadline change IS a genuine
+  // fix and was measured: its old loop slept a FULL period unconditionally,
+  // so overshoot really did extend its grid. Its kLowest -> kNormal clock
+  // priority change, from the same commit, is plausible but unmeasured.
   //
   // The loop re-reads the clock on every pass deliberately: NanoSleep may
   // return short (the debugger can suspend this thread, the scheduler can
