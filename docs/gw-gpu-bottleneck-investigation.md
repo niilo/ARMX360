@@ -336,6 +336,19 @@ Relationship to the rest:
 8. **The driver is a free variable.** Seven Turnip builds are installed, and at least one run used
    a per-game override of `Turnip_v26.3.0-R3` while the global was `mainline-turnip-V31`.
 
+> All eight traps are now encoded as machine-checked preconditions in
+> `tools/bench-ab.sh` — see `docs/benchmark-harness.md`. Before starting a new
+> A/B, run `tools/bench-ab.sh preflight`, and after each run
+> `tools/bench-ab.sh assert-log --log xe.log --expect game.<cvar>=<value>
+> --driver-path <build>`. Two traps that used to rely on memory are now
+> self-reporting: **trap 1**, because `Shader storage: pipeline file … (0 bytes on
+> disk)` identifies a cold pipeline cache directly, and **trap 3**, because the
+> absence of `Loading game config:` is the machine-readable signature of "no
+> per-game config was applied" (`config.cc:329-331` returns silently when the file
+> is missing). Note the per-game override block logs the **bare cvar name**, not
+> `category.name` (`config.cc:350`), and `assert-log` refuses an unqualified
+> `--expect` rather than guessing which config source to check.
+
 ---
 
 ### 12.7 OUTCOME — measured, shelved
