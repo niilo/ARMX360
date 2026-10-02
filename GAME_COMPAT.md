@@ -6,16 +6,40 @@ titles don't want — and use the emulator's per-game config mechanism instead.
 
 ## How per-game configs work
 
-- Path: `<storage_root>/config/<TITLEID>.config.toml`
-  (on Android: `/sdcard/Android/data/<package>/files/xendroid/config/`)
-- Loaded automatically when a title launches, *after* the global
-  `xenia-canary.config.toml`, so its values override the global ones
-  (`src/xenia/emulator.cc` → `config::LoadGameConfig`,
-  `src/xenia/config.cc` → `ReadGameConfig`).
-- Keys are looked up as `category.name`, so the section header is **required**.
-  A bare `clear_memory_page_state = true` without `[GPU]` is silently ignored.
-- The title ID is the 8-hex-digit uppercase ID shown in `xe.log` at launch
-  (`Title ID: XXXXXXXX`); it is also the title's folder name under `content/`.
+- Path: `<storage_root>/config/<TITLEID>.config.toml`, built by
+  `config::GetGameConfigPath()` (`config.cc:50-52`).
+  On Android `storage_root` is the app-data dir passed as `--storage_root`
+  (`EmulatorHostActivity.kt` → `Utils.get_storage_root_path()` →
+  `Application.get_app_data_dir()`), i.e. in practice
+  `/sdcard/Android/data/<package>/files/compose/config/`
+  (verified on-device; note this is `compose`, not `xendroid`).
+- On Android it is applied at boot by `config::LoadGameConfigForFile`
+  (`config.cc:267-364`), called from `xendroid_emu.cpp:328` once
+  `config::SetupConfig()` has loaded the global file. It runs **after** the global
+  `xenia-canary.config.toml`, so its values win. (`config::LoadGameConfig`,
+  `config.cc:495`, is a *reader* used by the in-app settings editor and the GPU
+  command processor — it is not the boot-time overlay path.)
+- Keys are looked up as `category.name` (`config.cc:340-341`), so the section header
+  is **required**. A bare `clear_memory_page_state = true` without `[GPU]` is silently
+  ignored.
+- The title ID is the 8-hex-digit uppercase ID. In `xe.log` the reliable
+  launch-time line is `Extracted title_id XXXXXXXX from: <path>`
+  (`config.cc:308`); it is also the title's folder name under `content/`.
+- **If the file is missing, nothing is logged at all** — `config.cc:329-331`
+  returns early and silently. That is why a "config applied" claim must be checked
+  in the log rather than assumed.
+
+Confirm a per-game config actually applied before trusting any A/B:
+
+```sh
+tools/bench-ab.sh snapshot-config --title-id 584108FF --out before.txt
+# ... launch, run, then ...
+tools/bench-ab.sh verify-config --title-id 584108FF --before "$(awk '{print $3}' before.txt)"
+tools/bench-ab.sh assert-log --log xe.log --expect game.readback_resolve=none
+```
+
+These files have been observed to vanish mid-session, silently reverting a
+setting — see `docs/benchmark-harness.md`.
 
 Example (adb):
 
