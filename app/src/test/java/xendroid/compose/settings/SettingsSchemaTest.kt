@@ -1,12 +1,14 @@
 package xendroid.compose.settings
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import xendroid.compose.settings.Setting
 import xendroid.compose.settings.SettingsSchema
+import java.io.File
 
 /** Schema-integrity checks (no emulator / JNI needed). */
 class SettingsSchemaTest {
@@ -127,4 +129,103 @@ class SettingsSchemaTest {
             assert(it.min <= it.max) { "${it.key}: min ${it.min} > max ${it.max}" }
         }
     }
-}
+
+    // ---- Kotlin UI default vs. the default the native binary actually runs ----
+    //
+    // The settings screen renders schema defaults when a key is absent from the live config,
+    // and SettingsRepository.isModified() compares the live value against them too. So when
+    // the schema default disagrees with the effective native default, the UI shows a toggle
+    // in a state the emulator is not in, and a "modified" badge that is simply wrong.
+    //
+    // Effective native default = the bundled template's value if the template ships the key,
+    // else the hardcoded DEFINE_bool default. (The template is copied to
+    // xenia-canary.config.toml on first run, so a shipped key always wins; a key the template
+    // omits falls through to the compiled-in DEFINE_bool.) vulkan_in_pass_resolve was exactly
+    // this bug: template omits it, DEFINE_bool says false, schema said true.
+    //
+    // Same spirit as encoding the A/B traps as machine-checked preconditions in
+    // tools/bench-ab.sh rather than trusting memory: a divergence here is invisible in review
+    // and misleads every user of the settings screen, so it is asserted, not documented.
+
+    private fun repoRoot(): File {
+        var dir = File(System.getProperty("user.dir")).absoluteFile
+        while (true) {
+            if (File(dir, "settings.gradle").isFile &&
+                File(dir, "emulator-core/src/main/cpp").isDirectory
+            ) return dir
+            dir = dir.parentFile ?: error(
+                "could not locate the XenDroid repo root from ${System.getProperty("user.dir")}"
+            )
+        }
+    }
+
+    /** `name = true|false` at the start of a line, ignoring the trailing `# comment`. */
+    private fun boolLiterals(text: String): Map<String, Boolean> =
+        Regex("""(?m)^\s*([a-z0-9_]+)\s*=\s*(true|false)\b""")
+            .findAll(text)
+            .associate { it.groupValues[1] to (it.groupValues[2] == "true") }
+
+    /** `DEFINE_bool(name, default, "help"...` — the default is always the 2nd argument.
+     *  Scans .cc and .cpp: the app's own entry points (xendroid_emu.cpp) define their share of
+     *  the cvars this screen exposes. */
+    private fun nativeBoolDefaults(root: File): Map<String, Boolean> {
+        val out = HashMap<String, Boolean>()
+        val cppDir = File(root, "emulator-core/src/main/cpp")
+        val re = Regex("""DEFINE_bool\(\s*([A-Za-z0-9_]+)\s*,\s*(true|false)\s*,""")
+        cppDir.walkTopDown()
+            .filter { it.isFile && (it.extension == "cc" || it.extension == "cpp") }
+            .forEach { f ->
+                re.findAll(f.readText()).forEach { m ->
+                    // First definition wins: a debug_* probe cvar shadowing a real one is noise.
+                    out.putIfAbsent(m.groupValues[1], m.groupValues[2] == "true")
+                }
+            }
+        return out
+    }
+
+    @Test fun bool_defaults_match_effective_native_default() {
+        val root = repoRoot()
+        val template = boolLiterals(
+            File(root, "emulator-core/src/main/assets/config/default_config.toml").readText()
+        )
+        val native = nativeBoolDefaults(root)
+
+        val problems = ArrayList<String>()
+        var compared = 0
+        for (s in all.filterIsInstance<Setting.Bool>()) {
+            // Keys with no DEFINE_bool anywhere are not native cvars (app-level switches like
+            // `mute`, `readback_memexport`); they legitimately have no native default to match.
+            val nativeDefault = native[s.name] ?: continue
+            val effective = template[s.name] ?: nativeDefault
+            compared++
+            if (effective != s.default) {
+                val from = if (s.name in template) "bundled template" else "DEFINE_bool"
+                problems += "${s.key}: ui=${s.default} but effective=$effective (from $from)"
+            }
+        }
+
+        assertTrue(
+            "compared only $compared Bools - the native scan found far fewer than expected, " +
+                "so the check is not actually running",
+            compared >= 90,
+        )
+        assertEquals(
+            "Kotlin schema defaults disagree with the effective native default(s):\n" +
+                problems.joinToString("\n") +
+                "\nThe settings screen renders these defaults when a key is absent from the " +
+                "live config, so each one shows the user a state the emulator is not in.",
+            0,
+            problems.size,
+        )
+    }
+
+    /** The specific regression, pinned so the general check above cannot mask it. A key the
+     *  bundled template deliberately omits must still match its compiled-in default. */
+    @Test fun vulkan_in_pass_resolve_default_is_false() {
+        val s = SettingsSchema.byKey["Vulkan|vulkan_in_pass_resolve"] as Setting.Bool
+        assertFalse(
+            "vulkan_in_pass_resolve is omitted from default_config.toml, so DEFINE_bool's " +
+                "false (vulkan_render_target_cache.cc) is what a stock install runs",
+            s.default,
+        )
+    }

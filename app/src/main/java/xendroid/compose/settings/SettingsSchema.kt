@@ -41,7 +41,12 @@ object SettingsSchema {
                 "auto" to "auto (Adreno 6xx only)",
                 "on" to "on (force everywhere - hang diagnostic)",
                 "off" to "off (never add)"),
-            b("Vulkan", "vulkan_in_pass_resolve", "In-pass EDRAM resolve", true),
+            // Default MUST match the effective C++ default (DEFINE_bool in
+            // vulkan_render_target_cache.cc). This key is deliberately NOT shipped in the
+            // bundled default_config.toml, so the hardcoded C++ value is what a stock install
+            // actually runs - a UI default of true here showed the toggle ON while the binary
+            // had it OFF. See SettingsSchemaTest.bool_defaults_match_effective_native_default.
+            b("Vulkan", "vulkan_in_pass_resolve", "In-pass EDRAM resolve", false),
             b("Vulkan", "vulkan_resolve_to_texture_promote", "Resolve-to-texture: promote", true),
             b("Vulkan", "vulkan_resolve_to_texture", "Resolve-to-texture: store", true),
             b("Vulkan", "vulkan_resolve_to_texture_serve", "Resolve-to-texture: skip upload", true),

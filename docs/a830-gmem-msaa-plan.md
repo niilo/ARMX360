@@ -584,10 +584,31 @@ to whoever has the mesa tree**; it is deliberately not started here.
   (Finding 1), so it is not a gate drawn too narrow — it is a gate fed by a
   parser that returns 0/34/617. Fixing the parse is a prerequisite for *any*
   generation-gated policy, including a future a6xx fix.
-- `SettingsSchema.kt:37` declares `vulkan_in_pass_resolve` default `true` while
+- `SettingsSchema.kt` declared `vulkan_in_pass_resolve` default `true` while
   the C++ default is `false` (`vulkan_render_target_cache.cc:90`). Pre-existing
   divergence, flagged not fixed — the UI default would silently enable a
   feature the binary does not enable by default.
+
+  **Fixed**, and the "silently" is now precise rather than inferred. The key
+  is deliberately **absent** from the bundled `default_config.toml`, so the
+  compiled-in `DEFINE_bool` value is what a stock install actually runs: the
+  settings screen showed the toggle ON while the binary had it OFF, and
+  `SettingsRepository.isModified()` (which compares live against schema default)
+  put a wrong "modified" badge on it. Schema default is now `false`.
+
+  A sweep of all 101 schema Bools against the whole `DEFINE_bool` tree found
+  this to be the **only user-visible** instance. Two more show Kotlin-vs-C++
+  disagreement (`vulkan_async_skip_draws`, `vulkan_log_debug_messages`) but the
+  bundled template ships an explicit value for both, so the template wins and
+  the UI already agrees — latent drift, not a live bug, and deliberately not
+  "fixed" here because aligning the C++ side to the template would change what
+  a stock install runs, which is a behaviour change and not this commit's job.
+  `SettingsSchemaTest.bool_defaults_match_effective_native_default` now asserts
+  the effective default (template if shipped, else `DEFINE_bool`) for every
+  comparable Bool, so a future divergence fails the build instead of misleading
+  a user. Note it needs no cvar list of its own to stay honest: it re-reads the
+  sources, which is the same "encode the trap, don't trust memory" move
+  `tools/bench-ab.sh` makes.
 
   is reduce or relocate its own post-pass shared-const writes (e.g. move the
   in-pass resolve's fragment push constants into the same UBO mechanism the
