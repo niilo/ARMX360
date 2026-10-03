@@ -32,11 +32,27 @@ jobs:
 
     steps:
 
-    - name: Check APK keystore
+    # Whether this repository can sign a release at all.
+    #
+    # A fork, and any clone without the maintainer's keystore, has no
+    # ANDROID_KEYSTORE_BASE64. Hard-failing on it meant the job died at step 1
+    # and NOTHING after it ran -- including the JVM unit tests, which are the
+    # only check that has never been executed on a fork and the one thing worth
+    # getting green. So this records the capability instead of demanding it, and
+    # the signing/artifact steps below are gated on it. Tests and lint stay
+    # unconditional: they need no secrets and are the reason to run this at all.
+    #
+    # The upstream behaviour is unchanged when the secret IS present: same
+    # failure text on a real misconfiguration, because HAS_KEYSTORE is true and
+    # the gated steps still hard-fail.
+    - name: Detect signing capability
       run: |
-        if [ -z "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
-          echo "::error::ANDROID_KEYSTORE_BASE64 secret is not configured."
-          exit 1
+        if [ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
+          echo "HAS_KEYSTORE=true" >> $GITHUB_ENV
+          echo "Signing secrets present - release build and signature will run."
+        else
+          echo "HAS_KEYSTORE=false" >> $GITHUB_ENV
+          echo "::notice::No ANDROID_KEYSTORE_BASE64 in this repository (expected on a fork). Skipping the release build and signing; unit tests and lint still run below. To enable releases, add the repository secrets ANDROID_KEYSTORE_BASE64, KEY_ALIAS, KEYSTORE_PASSWORD, KEY_PASSWORD."
         fi
 
     ##################################################################
@@ -119,6 +135,7 @@ jobs:
     # Restore keystore
     ##################################################################
     - name: Decode keystore
+      if: env.HAS_KEYSTORE == 'true'
       run: |
         if [ -z "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
           echo "::error::ANDROID_KEYSTORE_BASE64 secret is not configured."
@@ -133,6 +150,7 @@ jobs:
         fi
 
     - name: Check signing secrets
+      if: env.HAS_KEYSTORE == 'true'
       run: |
         if [ ! -n "${{ secrets.KEY_ALIAS }}" ]; then
           echo "::error::Failed to fetch key alias."
@@ -210,11 +228,10 @@ jobs:
     # keeps both Gradle invocations' inputs identical so the build cache and
     # the configured project model are shared instead of built twice.
     #
-    # KNOWN LIMITATION, unchanged by this step: "Check APK keystore" is the
-    # first step in the job, so a pull request from a fork (no secrets) still
-    # dies before reaching these tests. Making tests secret-independent would
-    # mean moving them into their own job -- not done here because it would
-    # duplicate the SDK/NDK setup that dominates this job's non-build time.
+    # The keystore gate is no longer upstream of these tests. "Detect signing
+    # capability" records HAS_KEYSTORE instead of exiting, so a fork with no
+    # secrets now reaches this step and actually runs them; only the signing and
+    # release steps below are skipped. That was the whole reason for the change.
     - name: JVM unit tests
       run: |
         chmod +x gradlew
@@ -254,6 +271,7 @@ jobs:
     # Build
     ##################################################################
     - name: Build Release APK
+      if: env.HAS_KEYSTORE == 'true'
       run: |
         chmod +x gradlew
 
@@ -268,6 +286,7 @@ jobs:
     # Sign APK
     ##################################################################
     - name: Sign APK
+      if: env.HAS_KEYSTORE == 'true'
       run: |
         APK=$(find . -name "*release*.apk" | head -n 1)
 
@@ -279,6 +298,7 @@ jobs:
           "$APK"
 
     - name: Verify Signature
+      if: env.HAS_KEYSTORE == 'true'
       run: |
         APK=$(ls app/build/outputs/apk/release/*.apk)
 
@@ -292,6 +312,7 @@ jobs:
       run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
     - name: Rename APK
+      if: env.HAS_KEYSTORE == 'true'
       run: |
         APK=$(ls app/build/outputs/apk/release/*.apk)
         mv "$APK" "XenDroid_Release_${{ steps.vars.outputs.sha_short }}.apk"
@@ -300,6 +321,7 @@ jobs:
     # Delete old artifacts if needed
     ##################################################################
     - name: Delete oldest artifacts
+      if: env.HAS_KEYSTORE == 'true'
       uses: actions/github-script@v7
       with:
         script: |
@@ -334,14 +356,19 @@ jobs:
           }
 
     - name: Upload artifact
-      if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+      # Gated on HAS_KEYSTORE as well as the event: the renamed APK only exists
+      # when the release build ran, so without the gate this step would fail on
+      # a missing path instead of skipping cleanly.
+      if: env.HAS_KEYSTORE == 'true' && (github.event_name != 'push' || github.ref != 'refs/heads/main')
       uses: actions/upload-artifact@v4
       with:
         name: XenDroid_Release_${{ steps.vars.outputs.sha_short }}
         path: XenDroid_Release_${{ steps.vars.outputs.sha_short }}.apk
 
     - name: Create GitHub Release
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      # Same gate. Without it a fork with no keystore would still reach this
+      # step on a push to main and try to publish a release built from nothing.
+      if: env.HAS_KEYSTORE == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
       uses: softprops/action-gh-release@v2
       with:
         tag_name: XenDroid-${{ steps.vars.outputs.sha_short }}
