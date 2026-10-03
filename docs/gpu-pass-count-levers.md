@@ -348,6 +348,71 @@ sites are classified.
 - that `VkPassSplit` and `VkPassBreaks` print sane values;
 - any fps, GPU-busy or thermal number whatsoever.
 
+### 4.1 Partial device run — got the plumbing, not the picture
+
+An unattended run on a Pocket S (Android 13, Adreno 740 / `kalama`) got **as
+far as proving the instrumentation is wired up and honest**, and then hit an
+environment wall. Worth recording, because every step below is a trap this
+runbook does not currently mention.
+
+**Which package to use.** The instrumentation is only in the **debug** build.
+Verified by pulling both installed APKs and grepping `lib/arm64-v8a/libe.so`:
+
+| string | release | debug |
+|---|---|---|
+| `VkPassBreaks` | 0 | 2 |
+| `VkPassSplit` | 0 | 3 |
+| `log_gpu_pass_break_reasons` | 0 | 1 |
+
+So run this against `xendroid.compose.debug`, not `xendroid.compose`. This is
+not fixable from a config file: `config.cc:338-345` only resolves keys against
+pre-registered `cvar::ConfigVars`, so a cvar the binary never registered is
+silently dropped — the same silent-ignore mechanism `GAME_COMPAT.md` warns about.
+Setting it in a per-game config against a release build produces *no warning at
+all*, which is a fourth trap in the same family as traps 2 and 3.
+
+**The run that did work, end to end.** Grant All Files Access to the debug
+package, write `config/4541096D.config.toml`, then `am start` the exported
+`EmulatorHostActivity` with `--es game_uri <iso>` — no tap needed, the activity
+is `exported="true"` and boots from `surfaceCreated`. The log confirms the
+per-game config applied (trap 2/3 cleared, which is what makes the rest of the
+runbook trustworthy):
+
+```
+Extracted title_id 4541096D from: /storage/emulated/0/Roms/xbox360/SSX (USA) ....iso
+Loading game config: .../compose/config/4541096D.config.toml
+  log_gpu_frame_time_breakdown = true
+  log_gpu_pass_break_reasons = true
+Applied 2 game config override(s)
+```
+
+`tools/bench-ab.sh assert-log` agrees, naming both cvars as applied via the
+per-game config.
+
+**Then the harness refused the run, correctly.** `cache.bytes=0`,
+`FAIL pipeline cache was COLD (0 bytes on disk) -- this run must be DISCARDED`,
+`assert.failures=1`. That is trap 1 firing on a genuine cold cache — the
+harness did its job, and it is worth having seen refuse rather than report.
+
+**Why no picture.** The title never rendered a frame: zero `VkPassTime`,
+`VkPassId`, `DrawCallBegin` or `VkFrameSync` lines, and the log stopped growing
+at 1407 lines with the guest parked in `MemoryPollPark`. CPU and Vulkan init had
+completed (the Adreno driver initialises, config loads, shader storage is
+probed), but the SurfaceView was never on screen: the activity stayed in
+`mLastPausedActivity` with `isOnScreen=false`, and a persistent
+`NotificationShade` window (`Window{490c8af}`) held `mCurrentFocus` for the
+whole session — surviving `cmd statusbar collapse` and a SystemUI restart, and
+never yielding to the emulator. With no surface, no input, and no input past the
+splash, there is nothing to render and nothing to measure. A physical tap to
+clear the shade is the missing step; this is an unattended-display limit, not an
+emulator or config fault.
+
+**Net: still no `VkPassSplit`/`VkPassBreaks` numbers, and the section 3.2
+decision rule remains untested.** What is now established rather than assumed:
+the cvar exists in a shippable build, the per-game config path applies it, the
+harness asserts it applied, and the harness refuses a cold-cache run. The
+remaining unknown is unchanged — it needs a screen someone can see.
+
 **Deliberately not done:** no edit to the render path, the render-target cache,
 the deferred command buffer, or any pipeline/format decision. The only
 behavioural code touched is the `EndRenderPass` signature gaining a defaulted

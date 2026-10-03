@@ -185,14 +185,92 @@ Verified by execution:
   file untouched → pass; config silently rewritten → fail; config deleted → fail.
   Device `sha256sum` and `stat -c %s` both work, so the identity check is sound.
 - `dumpsys SurfaceFlinger --latency` parsing, against a live SurfaceView layer.
+- `assert-log` against a **real captured log** (5,120,152 bytes / 64,493 lines,
+  pulled byte-count-identical from the release package): the `Shader storage:
+  pipeline file ... (N bytes on disk)` format, the `Loaded N shaders from
+  storage` / `Loaded N pipeline descriptions, M shader translations needed` pair,
+  the `CONFIG DUMP` markers, and `Loading custom Vulkan driver: <path>` all match
+  the fixtures' shape, so the extractor and its `strip_prefix` are sound.
+  `--driver-path` matched a real driver path out of that log.
+
+### Fixtures reconciled against a real log — one invented number
+
+`docs/benchmark-harness.md` previously said the fixtures were reconstructed from
+source and should be checked against a real run. That check is now done, and it
+found a fabricated value: every warm fixture claimed
+`(9186 bytes on disk)`, a number with no source behind it. A real warm cache
+reports **`15390`**, on every one of the log's four sessions. Fixtures and the
+suite's `expect_output "cache.bytes=..."` now both say 15390, with the
+coupling called out at the assertion — editing one without the other fails a
+check, which is the behaviour you want.
+
+Two other drifts are worth knowing and are **not** fixed, because they would
+change what a stock install runs:
+
+- `vulkan_async_skip_draws` ships `true` in `default_config.toml` while
+  `DEFINE_bool` says `false`; `vulkan_log_debug_messages` ships `false` while
+  `DEFINE_bool` says `true`. The template wins at runtime, so the settings screen
+  already agrees with reality and there is no live bug — but the C++ default is
+  misleading to anyone reading it. Same class of drift as
+  `docs/a830-gmem-msaa-plan.md`'s corrected `vulkan_in_pass_resolve` entry, which
+  *was* user-visible (the template omits that key) and is now asserted by
+  `SettingsSchemaTest.bool_defaults_match_effective_native_default`.
+- The real log contains **no** `VkFrameSync`, `VkPassTime` or `fps` line, so
+  `instrumented-xe.log`'s two such lines are impossible-in-reality. Harmless —
+  that fixture exists to trip the instrumented-driver gate, which keys on the
+  driver marker, not on those lines — but they are aspirational, not captured.
 
 **Not** verified here, and needing a real measurement setup:
 
 - A full game run end to end (launch → sample → assert → report). No title was
   installed and no emulator session was run, so **no fps number in this repository
   comes from this harness yet**, and none is claimed.
-- The `xe.log` fixtures are reconstructed from source, not captured from a live
-  session. The first real run should be checked against them.
 - `preflight`'s bytecode-generation branch needs `glslangValidator`, `spirv-opt`
   and `spirv-dis`; they are absent from this environment, so only the
   missing-tool warning path was exercised.
+
+### Trap 9 — a cvar the binary does not have fails *silently*
+
+This is new, and it is the nastiest member of the family, because the harness
+cannot catch it: `config.cc:338-345` resolves per-game keys only against
+pre-registered `cvar::ConfigVars`. A key the installed binary never registered is
+not a cvar, is not an error, and logs nothing. Setting `log_gpu_pass_break_reasons`
+in a per-game file against a **release** build therefore looks identical to
+success — no warning, no `Applied` line for it, and `assert-log` reporting
+`assert.failures=0` for the cvars it *can* see.
+
+Verified by pulling both installed APKs and grepping `lib/arm64-v8a/libe.so`:
+
+| string | release | debug |
+|---|---|---|
+| `VkPassBreaks` | 0 | 2 |
+| `VkPassSplit` | 0 | 3 |
+| `log_gpu_pass_break_reasons` | 0 | 1 |
+| `gpu_idle_stall_backoff_ms` | 0 | 2 |
+| `vulkan_hdr_render_target_as_b10g11r11` | 0 | 1 |
+
+So the pass-count instrumentation is **only in the debug build**, and a
+measurement aimed at the release package will silently produce a log with no
+pass data. The fix belongs in `preflight`: it already records the commit and
+warns on a dirty tree, so it can also refuse a `--driver-path`-style package
+whose binary lacks the cvar being measured. Until then, grep the APK:
+
+```sh
+unzip -p <apk> lib/arm64-v8a/libe.so | strings | grep -c '^log_gpu_pass_break_reasons$'
+```
+
+## One unattended-run caveat
+
+`am start -n xendroid.compose.debug/xendroid.compose.EmulatorHostActivity -a
+xendroid.intent.action.xendroid --es game_uri <iso>` boots with no tap — the
+activity is `exported="true"` and boots from `surfaceCreated`
+(`EmulatorHostActivity.kt:449-471`). But on a device whose display is not being
+watched, a persistent `NotificationShade` window can hold `mCurrentFocus`
+indefinitely: the activity stays in `mLastPausedActivity` with `isOnScreen=false`,
+so no surface is created, `bootOnce()` never runs, no frame is ever rendered, and
+`assert-log` sees a log with zero `VkPassTime`/`VkFrameSync` lines. It survived
+`cmd statusbar collapse` and a SystemUI restart. Granting All Files Access is
+also required for the boot to get past
+`EmulatorHostActivity.kt:179-185`, which checks
+`Environment.isExternalStorageManager()` at runtime — so the process must be
+started *after* the grant, or it will `finish()` on the old cached value.
