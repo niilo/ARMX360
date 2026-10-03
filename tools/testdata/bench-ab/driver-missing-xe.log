@@ -11,7 +11,7 @@ vulkan_mid_frame_submission_draws = 1300
 ----------- END OF CONFIG DUMP ----
 i> f:0000000 7F000001 Loaded config: /sdcard/Android/data/xendroid.compose/files/compose/xenia-canary.config.toml
 i> f:0000000 7F000002 Storage root: /sdcard/Android/data/xendroid.compose/files/compose
-i> f:0000000 7F000003 Shader storage: pipeline file /sdcard/Android/data/xendroid.compose/files/compose/cache/shaders/shareable/584108FF.fbo.vk.xpso (9186 bytes on disk)
+i> f:0000000 7F000003 Shader storage: pipeline file /sdcard/Android/data/xendroid.compose/files/compose/cache/shaders/shareable/584108FF.fbo.vk.xpso (15390 bytes on disk)
 i> f:0000000 7F000003 Loaded 1284 shaders from storage
 i> f:0000000 7F000003 Loaded 906 pipeline descriptions, 37 shader translations needed
 i> f:0000001 7F000004 Loading custom Vulkan driver: /data/user/0/xendroid.compose/files/compose/driver/mainline-turnip-V31/libvulkan_freedreno.so

@@ -76,7 +76,10 @@ expect_rc 0 "assert-log accepts the good log" \
   assert-log --log "$FIX/good-xe.log" "${GOOD_CVARS[@]}" "${GOOD_DRIVER[@]}"
 expect_output "log.game_overrides=3" "override count parsed as 3" \
   assert-log --log "$FIX/good-xe.log" "${GOOD_CVARS[@]}"
-expect_output "cache.bytes=9186" "warm cache detected" \
+# 15390 is the byte count observed in a real captured log
+# (/sdcard/.../compose/xe.log on a Pocket S, title 4541096D, warm shareable cache).
+# The fixture and this expectation are deliberately coupled: both must change together.
+expect_output "cache.bytes=15390" "warm cache detected" \
   assert-log --log "$FIX/good-xe.log" "${GOOD_CVARS[@]}"
 expect_output "assert.failures=0" "zero failures on the good log" \
   assert-log --log "$FIX/good-xe.log" "${GOOD_CVARS[@]}"
