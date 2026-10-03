@@ -1,0 +1,275 @@
+# AGENTS.md
+
+Working notes for AI coding agents (and humans) changing this repository.
+
+XenDroid is an Android (arm64-v8a) port of a **Xenia Edge** fork. Most of the C++
+under `emulator-core/src/main/cpp/xenia/src/xenia/` is upstream; the interesting
+work is in the Vulkan command processor, the render-target cache, the Android
+JNI/Compose frontend, and the measurement tooling in `tools/`.
+
+Read this before your first change. The conventions below are not stylistic
+preferences — several exist because the opposite was done and the result was a
+wrong number published as fact.
+
+---
+
+## 1. The rule that matters most: never state an unverified result as fact
+
+This repository's documentation is a ledger of measurements. The house style,
+pushed hard by the maintainer across dozens of commits, is that **every claim is
+either verified with a cited source, or explicitly labelled as unverified.**
+
+Concretely:
+
+- **Cite `file:line`** for any claim about existing code. Not "the render target
+  cache does X" — `vulkan_render_target_cache.cc:3681`. Re-derive the line
+  number yourself rather than copying one out of `docs/`: those files were
+  written against older revisions, and a line reference that has drifted is
+  worse than none because it looks checked.
+- **Label inference as inference.** "Verified by reading" and "not verified —
+  needs a device" are the two categories that matter. There is a third that is a
+  bug: presenting an estimate as a measurement.
+- **Never invent a number.** If you did not run it, do not print a plausible
+  figure. Real examples of this being caught and fixed:
+  - A commit claimed the vblank pacing fix stopped frame rate "sagging toward
+    half"; the real overshoot table showed single-digit loss at realistic
+    overshoot (`c6b0ed7de` corrected an earlier overstatement in `dc3b2c5a3`).
+  - A shader-instruction-count argument was rejected because "a build with
+    strictly fewer SPIR-V instructions measured *slower*" on Adreno
+    (`docs/gw-gpu-bottleneck-investigation.md` §10, trap 4).
+  - The `xe.log` fixtures carried `(9186 bytes on disk)` — a fabricated figure
+    with nothing behind it. A real log says `15390`. Fixed in `ffca6110f`;
+    `tools/bench-ab-test.sh:79` now carries the coupling comment.
+- **Record refutations, not just findings.** `docs/a830-gmem-msaa-plan.md` has a
+  "Refuted — do not revisit" section precisely so the same dead end is not
+  re-investigated. Add to it when you kill a hypothesis.
+
+**Corollary:** when you cannot verify something, say so in the commit body and
+in the doc. A commit that honestly says "this needs a device I don't have" is
+worth more here than one that implies a result.
+
+---
+
+## 2. Secrets: verify before every commit
+
+**Required on every commit**, no exceptions — including one-line typo fixes and
+docs-only edits. It takes seconds, and the failure mode is unrecoverable (a
+force-push cannot reliably un-publish a leaked secret).
+
+The risk is real in this repo specifically: the signing keystore, device storage
+paths, and CI secret references all live in the same tree.
+
+```bash
+# 1. No key material on disk or tracked. aps3e.keystore/.jks are gitignored
+#    (.gitignore:19-20) but verify they were never added.
+git ls-files | grep -iE '\.(jks|keystore|p12|pem|pk8)$|^\.env$|credentials'
+
+# 2. No token/key/private-key shapes anywhere tracked.
+git grep -nIE '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)'
+
+# 3. The exact content you are about to publish — not the whole tree.
+git diff --cached | grep -nEi '(api[_-]?key|secret|passwd|password|token|bearer|authorization|private[_-]?key|access[_-]?key|client[_-]?secret|credential)'
+
+# 4. Machine-local config must not be tracked.
+git check-ignore -v local.properties    # must resolve to .gitignore:7
+```
+
+**Before the first push of a branch** (this covers commits you did not author and
+any history rewrite), scan what is actually being transmitted:
+
+```bash
+git diff origin/main..main
+git diff origin/main..main | grep -nEi '(secret|token|password|api[_-]?key|private key)'
+git diff --numstat origin/main..main | awk '$1=="-"||$2=="-"{print "BINARY: "$3}'
+```
+
+Expect false positives and check them rather than waving them off — `token = ...`
+in Xenia C++ and `secrets.*` in CI YAML are references, not values. Known
+**benign** history hits, so you do not re-chase them: FFmpeg
+`libavformat/tls_openssl.c` contains an error-message *string literal* with
+`BEGIN PRIVATE KEY`, and mbedtls ships deliberately-public test keys
+(`ec_prv.pk8.pem`). Both are upstream, behind submodules, never in a push.
+
+**Also scan for personal data, not just credentials.** A device serial, a home
+path, or a username is a leak even though no scanner flags it. Refer to hardware
+as `Pocket S / Android 13 / Adreno 740` — model, OS and GPU reproduce a result,
+and they are what the docs already use. If you catch yourself adding an
+identifier (ADB serial, `u0_aNNN` uid, a real `/home/<user>/` path), leave it out.
+
+Do not commit a real `xe.log`, an APK, or any file pulled off a device. Logs are
+reconstructed as small synthetic fixtures under `tools/testdata/bench-ab/`.
+
+---
+
+## 3. Build and test
+
+Requires JDK 21, Android SDK 35, NDK `29.0.14206865`, CMake `3.30.3`, and the
+SPIR-V tools (`glslangValidator`, `spirv-opt`, `spirv-dis`). Full detail and
+Windows setup: **BUILD.md**.
+
+```bash
+./gradlew :app:testDebugUnitTest     # the gate; runs first in CI
+./gradlew :app:assembleDebug         # ~8-9 min cold (ThinLTO on release)
+tools/bench-ab-test.sh               # offline; 36 checks, no device needed
+```
+
+- `:app:testDebugUnitTest`, **not** `testReleaseUnitTest`. Release has
+  `minifyEnabled` + `shrinkResources`; R8 only rewrites the APK, so a release
+  test run exercises the same 14 classes with none of R8's risk while paying for
+  the slow link. See `.github/workflows/XenDroid.yml:199-206`.
+- Tests run **before** the APK build in CI so a red test is reported as a test
+  failure rather than "build failed". Keep that ordering.
+- `tools/bench-ab-test.sh` needs no device and no JDK. **Run it after touching
+  `tools/` or the fixtures** — it is a checker that fails if an assertion stops
+  firing. If you change a fixture, the suite's coupled expectation must change
+  too; editing one alone fails a check (intentional, and it works).
+- Do not add a blocking lint gate without a checked-in baseline; lint is
+  advisory on purpose (`.github/workflows/XenDroid.yml:229-235`).
+
+---
+
+## 4. Commit and PR conventions
+
+- **Subject: `[Area] Imperative summary, describing the effect.`**
+  Areas in use: `GPU`, `CPU`, `APU`, `Vulkan`, `Kernel`, `Android`, `XConfig`,
+  `Build`, `CI`, `Docs`, `Settings`, `Harness`. The summary says what changed for
+  the reader, not which function was edited — *"Stop the GPU thread polling
+  500x/s on the library screen"*, not *"Add throttle in graphics_system.cc"*.
+- **Body explains why, and what was NOT verified.** Most commits here are
+  several paragraphs and explicitly separate measured from unmeasured. If a
+  priority or perf claim is unmeasured, say so in the body.
+- **One logical change per commit.** Docs, code and fixtures for the same fix
+  belong together; two unrelated fixes do not. If you catch yourself making an
+  empty commit or bolting a second topic onto one via `--amend`, reset and redo
+  it.
+- **Default to a cvar-gated, off-by-default change** for anything touching the
+  render path. Give the cvar a `CATEGORY` and help text stating the tradeoff and
+  the measurement needed to justify turning it on. See `e1878e23f` (32bpp host
+  format) and `6964dfb0a` (absolute-deadline pacing).
+- **Default per-title escape hatches** to the per-game config mechanism in
+  **GAME_COMPAT.md**, not the global config.
+- No agent attribution trailers are used in this history; do not add them.
+
+---
+
+## 5. C++ and Kotlin conventions
+
+- **C++** follows upstream Xenia: 2-space indent, `DEFINE_bool`/`DEFINE_int`
+  with a `CATEGORY` last argument, `XELOGI` for logging, comments that explain
+  *why* rather than restating the code. Match surrounding style over personal
+  preference.
+- **Kotlin/Compose** frontend is `app/src/main/java/xendroid/compose/`.
+  Settings are declared once in `SettingsSchema.kt` with a matching entry in
+  `SettingDescriptions.kt`.
+- **A settings default must match what the binary actually runs.** The effective
+  default is the bundled template's value if
+  `emulator-core/src/main/assets/config/default_config.toml` ships the key, else
+  the compiled-in `DEFINE_bool`. If they disagree the UI shows a toggle state
+  the emulator is not in, and `isModified()` badges it wrongly.
+  `SettingsSchemaTest.bool_defaults_match_effective_native_default` now enforces
+## 6. Measurement discipline
+
+Performance work here is easy to get wrong and hard to notice. The traps are
+encoded as machine-checked preconditions in `tools/bench-ab.sh`; the reasoning
+is in **docs/benchmark-harness.md** and `docs/gw-gpu-bottleneck-investigation.md`
+§10. Read both before any A/B.
+
+The ones that have actually cost someone a wrong conclusion:
+
+1. **Run twice, keep the second.** The first run after a new build recompiles
+   pipelines and reads low. Always.
+2. **Prove the cvar applied** before believing any A/B. Two "results" were
+   configs that had never changed.
+3. **Per-game config files vanish.** Re-verify before *and* after every run.
+4. **SPIR-V opcode histograms are not a cost model on Adreno.** Fewer
+   instructions measured *slower*. Shader *size* tracked reality.
+5. **Generated bytecode headers are untracked and survive `git checkout`.** Wipe
+   `emulator-core/src/main/cpp/xenia/src/xenia/gpu/shaders/bytecode/` before a
+   bisect build; require `0 skipped/failed`.
+6. **Counter selectors are generation-specific.** A renumbered selector reports
+   plausible numbers under the wrong name — worse than no data.
+7. **Device readings carry ~±2fps.** Do not over-read a 13-vs-15 difference. A
+   neutral commit was once reverted on that basis.
+8. **The driver is a free variable.** Record and assert which build ran.
+9. **A cvar the binary does not have fails silently.** `config.cc:338-345`
+   resolves per-game keys only against pre-registered `ConfigVars`; an unknown
+   key is dropped with no warning and no log line. Verified: the pass-count
+   instrumentation exists **only in the debug build**, so pointing it at a
+   release package yields a log with no pass data and no complaint. Grep the APK
+   before trusting a run:
+   `unzip -p <apk> lib/arm64-v8a/libe.so | strings | grep -c '^<cvar>$'`
+10. **Never take an fps number from a run with `log_gpu_frame_time_breakdown`
+    on.** It issues `vkCmdCopyQueryPoolResults(..., VK_QUERY_RESULT_WAIT_BIT)`
+    every submission and stalls the queue. It is a ratio to read, not a frame
+    time to believe. Likewise never use the instrumented Turnip build for fps
+    claims — locating only.
+
+Exit codes from the harness are meaningful: `1` = an assertion failed and **the
+measurement is void**; `3` = **refused to report** (cold cache, instrumented
+driver, or too few samples). "No result" must stay distinguishable from "failed
+result". Never report a number the harness refused.
+
+### Device safety
+
+The attached device may be the user's real one.
+
+- Ask before installing/uninstalling APKs, clearing app data, changing global
+  settings, or revoking app permissions.
+- Restore anything you change: `appops set <pkg> MANAGE_EXTERNAL_STORAGE default`,
+  delete created per-game configs, `settings delete global
+  stay_on_while_plugged_in`, force-stop what you started.
+- Prefer the **debug** package (`xendroid.compose.debug`) for measurement — it is
+  `run-as`-capable and usually carries newer instrumentation. It needs All Files
+  Access granted **before** launch: `EmulatorHostActivity.kt:179-185` checks
+  `Environment.isExternalStorageManager()` at runtime, so a process started
+  before the grant will `finish()` on the cached value.
+- An unattended device can have a persistent `NotificationShade` holding
+  `mCurrentFocus`; the activity then stays paused with `isOnScreen=false`, no
+  surface is created, `bootOnce()` never runs and **no frame renders**. If a run
+  produces a log with zero `VkPassTime` lines, check window focus before
+  suspecting the emulator.
+
+---
+
+## 7. Where things live
+
+| Path | What |
+|---|---|
+| `app/src/main/java/xendroid/compose/` | Kotlin/Compose frontend |
+| `app/src/test/java/xendroid/compose/` | 14 JVM unit test classes |
+| `emulator-core/src/main/cpp/xenia/src/xenia/` | Xenia C++ (mostly upstream) |
+| `.../gpu/vulkan/` | command processor, render-target cache — where GPU work lands |
+| `emulator-core/src/main/assets/config/default_config.toml` | bundled cvar template |
+| `tools/bench-ab.sh` | on-device A/B harness |
+| `tools/bench-ab-test.sh` | its offline test suite |
+| `tools/testdata/bench-ab/` | synthetic `xe.log` fixtures |
+| `docs/*.md` | investigation ledgers; read before touching GPU perf |
+| `BUILD.md` / `GAME_COMPAT.md` | toolchain; per-game config mechanism |
+
+Note `config.cc` is at `xenia/src/xenia/config.cc`. There is **no**
+`xenia-base/` directory in this tree, despite what some older docs and comments
+imply.
+
+---
+
+## 8. Scope discipline
+
+- Do not reformat or "tidy" upstream Xenia code. Diff noise in vendored files
+  buries the actual change and complicates rebases onto Edge.
+- Do not add a fallback, shim, or compat path "just in case" without evidence
+  that the case occurs.
+- Prefer a cvar-gated, off-by-default change you can A/B over an unconditional
+  one, and prefer recording a negative result over shipping an unmeasured
+  optimisation.
+- If a task turns out to be blocked (missing device, missing toolchain, wrong
+  hardware generation), **report it as blocked with the reason**. Do not
+  substitute a different device or a simulated result — an a830 question
+  answered on an Adreno 740 is worse than no answer.
+
+  this for every comparable Bool — a new cvar-backed setting is covered
+  automatically. Do not "fix" a divergence by editing the C++ default unless you
+  intend a behaviour change; that changes what a stock install runs.
+- Keep JVM tests free of device/JNI dependencies. `SettingsSchemaTest` reads
+  repo sources directly, which is how it stays honest without a cvar list.
+
+---
