@@ -56,12 +56,19 @@ worth more here than one that implies a result.
 docs-only edits. It takes seconds, and the failure mode is unrecoverable (a
 force-push cannot reliably un-publish a leaked secret).
 
-The risk is real in this repo specifically: the signing keystore, device storage
-paths, and CI secret references all live in the same tree.
+The risk is real in this repo specifically: device storage paths and CI secret
+references live in the same tree as the code, and a release build is signed from
+a keystore that is a repository secret rather than a tracked file.
 
 ```bash
-# 1. No key material on disk or tracked. aps3e.keystore/.jks are gitignored
-#    (.gitignore:19-20) but verify they were never added.
+# 1. No key material on disk or tracked. Note aps3e.keystore/aps3e.jks are
+#    ignored (.gitignore:19-20) but are LEGACY: nothing in the build or CI
+#    references them, and app/build.gradle has no signingConfig block at all.
+#    Keep the rules (they cost nothing and would catch a resurrected legacy
+#    key) but do not read them as "the build uses this keystore" - it does not.
+#    Release signing happens entirely in CI via apksigner, from the
+#    ANDROID_KEYSTORE_BASE64 / KEY_ALIAS / KEYSTORE_PASSWORD / KEY_PASSWORD
+#    repository secrets.
 git ls-files | grep -iE '\.(jks|keystore|p12|pem|pk8)$|^\.env$|credentials'
 
 # 2. No token/key/private-key shapes anywhere tracked.
@@ -116,7 +123,7 @@ tools/bench-ab-test.sh               # offline; 36 checks, no device needed
 - `:app:testDebugUnitTest`, **not** `testReleaseUnitTest`. Release has
   `minifyEnabled` + `shrinkResources`; R8 only rewrites the APK, so a release
   test run exercises the same 14 classes with none of R8's risk while paying for
-  the slow link. See `.github/workflows/XenDroid.yml:199-206`.
+  the slow link. See `.github/workflows/XenDroid.yml:217`.
 - Tests run **before** the APK build in CI so a red test is reported as a test
   failure rather than "build failed". Keep that ordering.
 - `tools/bench-ab-test.sh` needs no device and no JDK. **Run it after touching
@@ -124,7 +131,37 @@ tools/bench-ab-test.sh               # offline; 36 checks, no device needed
   firing. If you change a fixture, the suite's coupled expectation must change
   too; editing one alone fails a check (intentional, and it works).
 - Do not add a blocking lint gate without a checked-in baseline; lint is
-  advisory on purpose (`.github/workflows/XenDroid.yml:229-235`).
+  advisory on purpose (`continue-on-error: true`, `.github/workflows/XenDroid.yml:261`).
+
+### Testing on your own device needs no secrets at all
+
+`app/build.gradle` has **no `signingConfig` block**, and release signing happens
+entirely in CI via `apksigner`. So local testing never touches a keystore:
+
+```bash
+./gradlew :app:installDebug      # signed automatically with AGP's debug keystore
+```
+
+Two things to know:
+
+- The debug variant has `applicationIdSuffix '.debug'` (`app/build.gradle:83`),
+  so it installs **alongside** a release build as `xendroid.compose.debug` with
+  no signature conflict. That is the variant to use for measurement: it is
+  `run-as`-capable and carries the newer instrumentation (trap 9).
+- **Grant All Files Access before the first launch**, or
+  `EmulatorHostActivity.kt:179-185` will `finish()` immediately on the cached
+  `Environment.isExternalStorageManager()` value.
+
+For a minified (`minifyEnabled` + `shrinkResources`, `app/build.gradle:86-91`)
+release-variant APK on your own device, `assembleRelease` produces an **unsigned**
+APK; sign it with a throwaway key of your own via
+`$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner`. It will not upgrade an existing
+maintainer-signed install without an uninstall first, so debug is usually the
+better choice for testing.
+
+CI-side: `Detect signing capability` sets `HAS_KEYSTORE`, and the build/sign/
+release steps are gated on it, so a fork without the secrets still runs the unit
+tests and lint and simply skips producing a signed release.
 
 ---
 
