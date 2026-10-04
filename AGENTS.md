@@ -167,12 +167,27 @@ shaders to SPIR-V during configure. A clean machine without them fails in ~25s
 with a message that names the fix; do not go looking for a C++ error when you
 see it.
 
-There is **no Dockerfile and no local container path** in this tree. The
-containerised build is CI only: the whole job runs in
-`ghcr.io/cirruslabs/android-sdk:35` (`.github/workflows/ARMX360.yml:17-18`).
-The only Dockerfiles that ever existed here were inside vendored third-party
-code and were deleted when those became submodules — do not go looking for one,
-and do not assume `./gradlew` alone is sufficient on a bare machine.
+There **is** a local container path: `Dockerfile` in the repo root.
+`.github/workflows/ARMX360.yml` runs in `ghcr.io/cirruslabs/android-sdk:35`
+(`.github/workflows/ARMX360.yml:17-18`) and the Dockerfile is based on the same
+image, so "works in CI" and "works locally" are the same toolchain:
+
+```bash
+docker build -t armx360-build .          # ~6 GB; NDK is most of it
+docker run --rm -v "$PWD":/src -v armx360-gradle-cache:/root/.gradle \
+    armx360-build ./gradlew :app:assembleDebug
+```
+
+Bind-mount the source rather than COPYing it — the tree is >2 GB with submodules.
+The image installs only what the base lacks (NDK, CMake, `glslang-tools`,
+`spirv-tools`, ninja, python3) and then **verifies the toolchain at image-build
+time**, so a broken image fails in seconds rather than four minutes into a
+native compile. Do not go looking for a C++ error when configure-time SPIR-V
+validation fires.
+
+Verified 2026-10-04: image builds; `:app:testDebugUnitTest` in the container
+gives **89 tests, 0 failures**; `:emulator-core:configureCMakeRelWithDebInfo`
+succeeds and generates **226** shader bytecode headers.
 
 ### Verified figures
 
@@ -343,6 +358,7 @@ The attached device may be the user's real one.
 | `tools/testdata/bench-ab/` | synthetic `xe.log` fixtures |
 | `design/` | launcher icon master artwork + the script that installs it |
 | `docs/*.md` | investigation ledgers; read before touching GPU perf |
+| `Dockerfile` | local build container, same base image as CI |
 | `BUILD.md` / `GAME_COMPAT.md` | toolchain; per-game config mechanism |
 
 The `mipmap-*` launcher resources are **generated output**. Edit

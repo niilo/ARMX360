@@ -26,6 +26,33 @@ The Gradle build produces two modules:
 
 ## Prerequisites
 
+### Docker (recommended — matches CI exactly)
+
+The repository ships a `Dockerfile` based on the **same image CI uses**
+(`ghcr.io/cirruslabs/android-sdk:35`), so a local container build and a CI build
+are the same toolchain rather than two that drift apart. It provides JDK 21,
+Android SDK 35, NDK `29.0.14206865`, CMake `3.30.3`, Python and the SPIR-V
+tools, and it verifies all of them at image-build time.
+
+```bash
+# One-time (~6 GB image; the NDK is most of it)
+docker build -t armx360-build .
+
+# Unit tests (fast, no device needed)
+docker run --rm -v "$PWD":/src -v armx360-gradle-cache:/root/.gradle \
+    armx360-build ./gradlew :app:testDebugUnitTest
+
+# Debug APK
+docker run --rm -v "$PWD":/src -v armx360-gradle-cache:/root/.gradle \
+    armx360-build ./gradlew :app:assembleDebug
+```
+
+The output lands in `app/build/outputs/apk/debug/` on the host, because the
+source is bind-mounted. Submodules must be initialised first
+(`git submodule update --init --recursive`); the image does not fetch them.
+The named volume `armx360-gradle-cache` keeps the Gradle cache between runs —
+without it every container start re-downloads dependencies.
+
 ### Linux host
 
 ```bash
