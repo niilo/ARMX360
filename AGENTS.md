@@ -20,18 +20,35 @@ the easiest way to break a build here:
 | Debug install | `armx360.compose.debug` | `applicationIdSuffix '.debug'`, `app/build.gradle:103` |
 
 `applicationId` and `namespace` are independent in AGP, which is what lets this
-fork install **beside** upstream XenDroid instead of replacing it — verified on
-a Pocket S / Android 13, where `armx360.compose.debug` and the pre-existing
-`xendroid.compose.debug` coexist.
+fork install **beside** upstream XenDroid instead of replacing it. Verified
+2026-10-04 on a Pocket S / Android 13, where **three** packages coexist:
+`xendroid.compose` (upstream release, pre-existing), `armx360.compose.debug`
+(ours, debuggable) and `armx360.compose` (ours, release — confirmed
+`debuggable=no` and `versionName=d74934e`, launched without a crash).
 
-**Do not "tidy" the Java package to match the app name.** `libe.so` resolves its
-JNI classes by FQN *string*: `emulator_xendroid.cpp:1781`
-`FindClass("xendroid/compose/Emulator")` plus twelve further sites, and
-`Java_xendroid_hardware_ProcessorInfo_gpu_1get_1physical_1device_1name_1vk` in
-`hardware_ProcessorInfo.cpp:8`. Renaming the package means editing every one of
-those, and a single miss is a runtime-only failure no local build catches. The
-thirteen FQN strings are present verbatim in the shipped `libe.so` — check them
-with `unzip -p <apk> lib/arm64-v8a/libe.so | strings | grep '^xendroid/'`.
+**Do not "tidy" the Java package to match the app name.** The JNI layer resolves
+its classes by FQN *string* or by a hardcoded export symbol, so a package rename
+is a rename of 13 string literals, and a single miss is a runtime-only failure no
+local build catches. Verified 2026-10-04 against the shipped
+`ARMX360_Release_d74934e.apk`:
+
+- **12 distinct FQN literals across 13 `FindClass` sites.** `emulator_xendroid.cpp:1781`
+  `FindClass("xendroid/compose/Emulator")` plus 12 more (`emulator.cpp:422,431,506`
+  and `emulator_xendroid.cpp:606,665,1300,1376,1433,1520,1579,1633,1690`);
+  `GameInfo` appears at both `:606` and `:665`, hence 13 sites but 12 literals.
+  Check with `unzip -p <apk> lib/arm64-v8a/libe.so | strings | grep -c '^xendroid/'`
+  — expect **12**.
+- **1 export symbol, and it is in a different library than you would expect.**
+  `Java_xendroid_hardware_ProcessorInfo_gpu_1get_1physical_1device_1name_1vk`
+  at `hardware_ProcessorInfo.cpp:8` ships in **`libhardware_ProcessorInfo.so`**,
+  not `libe.so` (`CMakeLists.txt:21` builds it as its own `SHARED` target).
+  `libe.so` contains **zero** `Java_*` exports — `grep -c 'Java_'` over its
+  `--dyn-syms` returns 0 — so a check that looks for this symbol in `libe.so`
+  will always report a false failure. Check it with
+  `readelf --dyn-syms -W lib/arm64-v8a/libhardware_ProcessorInfo.so | grep Java_xendroid`.
+
+Note the file lives at `emulator-core/src/main/cpp/hardware_ProcessorInfo.cpp`,
+directly under `cpp/`, **not** under `xenia/src/xenia/`.
 
 Read this before your first change. The conventions below are not stylistic
 preferences — several exist because the opposite was done and the result was a
