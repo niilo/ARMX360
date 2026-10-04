@@ -300,6 +300,18 @@ Two traps, both hit on 2026-10-04:
   That forced this rotation. Redact by matching the known key and replacing only
   the remainder (`sed -E 's/^(password[^:]*:).*/\1 <REDACTED>/'`), or better,
   never print the line at all.
+- **`gh secret set` takes exactly one positional arg.** The value goes through
+  stdin or `-b`, never as a second argument, so
+  `gh secret set KEY_ALIAS armx360` fails with *"accepts at most 1 arg(s),
+  received 2"*. This is worse than a plain typo: it is **partial**. On
+  2026-10-04 the `ANDROID_KEYSTORE_BASE64` line happened to succeed while both
+  password updates failed, leaving the rotated keystore paired with the
+  *pre-rotation* passwords — a state where every release sign fails. Always
+  confirm afterwards with `gh secret list` and check the **updated timestamps**;
+  a secret still showing its original date was never written.
+- **A green CI run is not proof the secrets are current.** A run that started
+  before a rotation uses whatever was set at that moment. Check the run's
+  `createdAt` against the time the secret changed before believing it.
 
 ---
 
