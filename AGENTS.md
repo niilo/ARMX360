@@ -467,6 +467,20 @@ Three things that break silently if edited on one side only:
   **name**, not the filename, so renaming `ARMX360.yml` without updating its
   `name:` leaves cache pruning permanently unsatisfied and silent.
 
+The repository itself was renamed `niilo/XenDroid` → `niilo/ARMX360` on
+2026-10-04. Nothing tracked needed editing: no file hardcoded the old name, and
+`BuildConfig.RELEASE_REPO` is derived from `github.repository` at build time
+(`ARMX360.yml:280`), so every future build picks the new name up on its own.
+
+The one thing worth knowing is that **already-installed APKs still carry the old
+string** — `ARMX360-d74934e` has `niilo/XenDroid` compiled into `classes.dex`
+(verified by extracting it). That is harmless only because GitHub answers
+`api.github.com/repos/niilo/XenDroid/...` with a **301** to the new repository
+ID and OkHttp follows redirects by default. Verified on the device after the
+rename: the updater logged `Release tag: ARMX360-3672fdc` while the app itself
+reported `Current: d74934e`. If that redirect behaviour ever stops working,
+installs made before the rename would silently stop seeing updates.
+
 Note `config.cc` is at `xenia/src/xenia/config.cc`. There is **no**
 `xenia-base/` directory in this tree, despite what some older docs and comments
 imply.
