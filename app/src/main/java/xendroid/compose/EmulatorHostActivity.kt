@@ -154,7 +154,7 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
         val gameUri = FrontendLaunch.resolveGamePath(this, intent)
         if (gameUri.isNullOrEmpty()) {
             Log.e(TAG, "No bootable game in launch intent; finishing")
-            Toast.makeText(this, "XenDroid: no game in launch intent", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "ARMX360: no game in launch intent", Toast.LENGTH_LONG).show()
             finish(); return
         }
         if (!EmulatorRuntime.supportsVulkan) {

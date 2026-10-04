@@ -1,19 +1,38 @@
 <p align="center">
-       <img height="256px" src="app/src/main/assets/XenDroid_foreground.png"/>
+       <img height="256px" src="app/src/main/assets/ARMX360_foreground.png"/>
     </a>
 </p>
 
-<h1 align="center">XenDroid - Android Xbox 360 Emulator</h1>
+<h1 align="center">ARMX360 - Android Xbox 360 Emulator</h1>
+
+> A fork of [XenDroid](https://github.com/rfandango/XenDroid), which was itself
+> forked from xa360e / [Xenia Canary](https://github.com/xenia-canary/xenia-canary)
+> and later rebased onto [Xenia Edge](https://github.com/has207/xenia-edge).
 
 ## History
-XenDroid was initially forked form xa360e, which was based off [Xenia Canary](https://github.com/xenia-canary/xenia-canary).
+ARMX360 is a fork of **XenDroid**, which was initially forked form xa360e, which was based off [Xenia Canary](https://github.com/xenia-canary/xenia-canary).
 However, a complete rebase was made on [Xenia Edge](https://github.com/has207/xenia-edge) with a new Kotlin backend.
 We are looking foward to keep the project updated alongside the Edge fork,
 and keep the code compatible with Xenia licenses.
 
+## About this fork
+The application id is now `armx360.compose`, so ARMX360 installs **alongside**
+an upstream XenDroid build rather than replacing it. The debug variant is
+`armx360.compose.debug`. The Java/Kotlin package (`xendroid.compose`) and the
+native JNI class names are deliberately **unchanged** -- `libe.so` resolves
+those classes by FQN string, so renaming them would be a device-only runtime
+risk for no user-visible benefit.
+
+Set your fork's release repo before publishing a build, or the in-app updater
+will keep polling upstream XenDroid's releases:
+```bash
+./gradlew assembleRelease -Parmx360.releaseRepo=<owner>/<repo>
+```
+CI sets this automatically from the running repository.
+
 ## Be aware of scams
-- XenDroid is a free project. If you paid for this, then you got scammed.
-- The ONLY reliable source for the apk is in the [releases](https://github.com/rfandango/XenDroid/releases/latest) section, along with the distributed source code.
+- ARMX360 is a free project. If you paid for this, then you got scammed.
+- Check this fork's own `releases` section for its APKs, along with the distributed source code.
   - We cannot be held responsible for edited apks by unkown users, you have been warned.
 
 ## Issue Reporting

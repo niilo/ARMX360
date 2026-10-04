@@ -6,7 +6,10 @@ import xendroid.compose.settings.Setting
 import xendroid.compose.settings.SettingsSchema
 
 object ProfileBootstrap {
-    private const val DEFAULT_GAMERTAG = "XenDroid"
+    // Default gamertag for a profile this app creates itself. Only reached when
+    // no profile exists yet (ensureDefaultProfile bails out otherwise), so
+    // renaming it does not touch an existing install's profile.
+    private const val DEFAULT_GAMERTAG = "ARMX360"
 
     @Volatile private var ensured = false
 

@@ -1,14 +1,20 @@
-# Launching XenDroid from emulation frontends (ES-DE, Daijishō, ...)
+# Launching ARMX360 from emulation frontends (ES-DE, Daijishō, ...)
 
-XenDroid's emulator activity is exported and boots a game directly from a launch
-intent, the same way Dolphin/PPSSPP standalone integrations work. No XenDroid UI
+ARMX360's emulator activity is exported and boots a game directly from a launch
+intent, the same way Dolphin/PPSSPP standalone integrations work. No ARMX360 UI
 is involved; when the game exits, the emulator process ends and control returns
 to the frontend.
 
 ## Intent surface
 
-- **Component**: `xendroid.compose/xendroid.compose.EmulatorHostActivity`
+- **Component**: `armx360.compose/xendroid.compose.EmulatorHostActivity`
 - **Action**: `xendroid.intent.action.xendroid` (or `android.intent.action.VIEW`)
+
+  The two halves of the component deliberately differ: the left is the
+  **application id** (`armx360.compose`, renamed in this fork), the right is the
+  **Java package**, still `xendroid.compose` because `libe.so` binds those
+  classes by FQN. An upstream XenDroid build keeps the `xendroid.compose/...`
+  left half, so frontends need one entry per installed build.
 - **Game selection**, first match wins:
   1. string extra `game_uri` — absolute path, `file://`, or `content://`
   2. string extra `AutoStartFile` — same formats (the Dolphin convention,
@@ -24,7 +30,7 @@ format and work for ISO/ZAR/XEX alike.
 Command-line test:
 
 ```sh
-adb shell am start -n xendroid.compose/.EmulatorHostActivity \
+adb shell am start -n armx360.compose/.EmulatorHostActivity \
   -a xendroid.intent.action.xendroid \
   --es game_uri '/storage/emulated/0/ROMs/xbox360/Game.iso'
 ```
@@ -41,7 +47,7 @@ Files live in `ES-DE/custom_systems/` on the device.
 <ruleList>
   <emulator name="XENDROID">
     <rule type="androidpackage">
-      <entry>xendroid.compose/xendroid.compose.EmulatorHostActivity</entry>
+      <entry>armx360.compose/xendroid.compose.EmulatorHostActivity</entry>
     </rule>
   </emulator>
 </ruleList>
@@ -64,7 +70,7 @@ Files live in `ES-DE/custom_systems/` on the device.
 </systemList>
 ```
 
-`%ROMRAW%` passes the unescaped absolute path (XenDroid's native format). A
+`%ROMRAW%` passes the unescaped absolute path (ARMX360's native format). A
 SAF-style variant also works thanks to the content resolver:
 `%EXTRA_AutoStartFile%=%ROMSAF%`.
 
@@ -72,8 +78,8 @@ SAF-style variant also works thanks to the content resolver:
 
 Create a custom player with:
 
-- Package: `xendroid.compose`
-- Class/Component: `xendroid.compose.EmulatorHostActivity`
+- Package: `armx360.compose`
+- Class/Component: `xendroid.compose.EmulatorHostActivity` (Java package unchanged)
 - Action: `xendroid.intent.action.xendroid`
 - Extra (string): `game_uri` = `{file.path}` (Daijishō) / the raw path variable
   of the frontend

@@ -154,7 +154,7 @@ class SettingsSchemaTest {
                 File(dir, "emulator-core/src/main/cpp").isDirectory
             ) return dir
             dir = dir.parentFile ?: error(
-                "could not locate the XenDroid repo root from ${System.getProperty("user.dir")}"
+                "could not locate the ARMX360 repo root from ${System.getProperty("user.dir")}"
             )
         }
     }

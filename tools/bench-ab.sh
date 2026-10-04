@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reproducible on-device A/B harness for XenDroid performance work.
+# Reproducible on-device A/B harness for ARMX360 performance work.
 #
 # WHY THIS EXISTS. docs/gw-gpu-bottleneck-investigation.md section 10 lists eight
 # methodology traps, and every one has already produced a WRONG conclusion at
@@ -57,7 +57,7 @@
 # dev's laptop over adb, not only in CI.
 set -euo pipefail
 
-PKG="${XENDROID_PKG:-xendroid.compose}"
+PKG="${XENDROID_PKG:-armx360.compose}"
 ADB="${ADB:-adb}"
 SERIAL="${XENDROID_SERIAL:-}"
 
@@ -113,7 +113,8 @@ Common options:
   --min-samples N   Refuse to report below this many samples. Default 3.
 
 Environment:
-  XENDROID_PKG      Package name. Default xendroid.compose.
+  XENDROID_PKG      Package name. Default armx360.compose (the release id).
+                    Use armx360.compose.debug for the debuggable variant.
   XENDROID_SERIAL   Device serial (required when more than one is attached).
 EOF
 }

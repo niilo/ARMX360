@@ -2,7 +2,10 @@ name: Cache cleanup
 
 on:
   workflow_run:
-    workflows: [XenDroid]
+    # Must match `name:` in ARMX360.yml. workflow_run keys off the workflow
+    # NAME, not the filename, so renaming the .yml file alone leaves this
+    # trigger permanently unsatisfied and cache pruning silently stops running.
+    workflows: [ARMX360]
     types: [completed]
   workflow_dispatch:
 

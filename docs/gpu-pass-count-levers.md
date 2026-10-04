@@ -253,10 +253,10 @@ log_gpu_frame_time_breakdown = true      # VkFrameSync + VkPassTime + VkPassId
 log_gpu_pass_break_reasons  = true       # VkPassSplit + VkPassBreaks (new)
 
 [Vulkan]
-vulkan_lib_path = '/data/user/0/xendroid.compose.debug/compose/driver/a6xx-instrumented-perf/libvulkan_freedreno.so'
+vulkan_lib_path = '/data/user/0/armx360.compose.debug/compose/driver/a6xx-instrumented-perf/libvulkan_freedreno.so'
 turnip_perf_sampler = '1'
 turnip_perf_sampler_period_ms = 250
-turnip_perf_sampler_file = '/storage/emulated/0/Android/data/xendroid.compose.debug/files/compose/tu_perf.log'
+turnip_perf_sampler_file = '/storage/emulated/0/Android/data/armx360.compose.debug/files/compose/tu_perf.log'
 ```
 
 If you only want the pass-count picture and not the counter sampler, drop the
@@ -364,7 +364,7 @@ Verified by pulling both installed APKs and grepping `lib/arm64-v8a/libe.so`:
 | `VkPassSplit` | 0 | 3 |
 | `log_gpu_pass_break_reasons` | 0 | 1 |
 
-So run this against `xendroid.compose.debug`, not `xendroid.compose`. This is
+So run this against `armx360.compose.debug`, not `armx360.compose`. This is
 not fixable from a config file: `config.cc:338-345` only resolves keys against
 pre-registered `cvar::ConfigVars`, so a cvar the binary never registered is
 silently dropped — the same silent-ignore mechanism `GAME_COMPAT.md` warns about.

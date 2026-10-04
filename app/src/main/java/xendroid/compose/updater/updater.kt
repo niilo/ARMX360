@@ -21,6 +21,7 @@ import com.google.gson.annotations.SerializedName
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.GET
+import retrofit2.http.Path
 import xendroid.compose.BuildConfig
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -56,13 +57,22 @@ sealed class UpdateResult {
 
 interface GithubApi {
 
-    @GET("repos/rfandango/XenDroid/releases/latest")
-    suspend fun latestRelease(): GithubRelease
+    // Owner/repo come from BuildConfig.RELEASE_REPO (set by -Parmx360.releaseRepo
+    // in app/build.gradle) rather than being hardcoded, so this fork does not
+    // silently poll upstream XenDroid's releases and offer them as its own.
+    @GET("repos/{owner}/{repo}/releases/latest")
+    suspend fun latestRelease(
+        @Path("owner") owner: String,
+        @Path("repo") repo: String
+    ): GithubRelease
 }
 
 private const val PREFS_NAME = "updater"
 private const val KEY_LAST_CHECK = "last_update_check"
 private const val UPDATE_INTERVAL = 5 * 60 * 1000L
+
+// Keep in lockstep with tag_name in .github/workflows/ARMX360.yml.
+private const val RELEASE_TAG_PREFIX = "ARMX360-"
 
 fun getRemainingCooldown(context: Context): Long {
     val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -111,7 +121,10 @@ suspend fun checkForUpdates(): UpdateResult {
 
     Log.d("Updater", "Starting update check")
 
-    val release = api.latestRelease()
+    val release = api.latestRelease(
+        BuildConfig.RELEASE_REPO.substringBefore('/'),
+        BuildConfig.RELEASE_REPO.substringAfter('/')
+    )
 
     Log.d("Updater", "Release tag: ${release.tagName}")
 
@@ -119,8 +132,12 @@ suspend fun checkForUpdates(): UpdateResult {
 
     Log.d("Updater", "Current: $currentHash")
 
+    // Must match the tag prefix the release workflow creates
+    // (.github/workflows/ARMX360.yml). A mismatch here does not error -- it
+    // compares "ARMX360-<sha>" against the bare sha and reports a bogus
+    // "update available" on every launch.
     val latestHash = release.tagName
-        .removePrefix("XenDroid-")
+        .removePrefix(RELEASE_TAG_PREFIX)
         .trim()
 
     Log.d("Updater", "Latest: $latestHash")
@@ -163,7 +180,7 @@ fun UpdateDialog(
             .verticalScroll(rememberScrollState())
             ) {
                 Text(
-                    "A new update for XenDroid is available."
+                    "A new update for ARMX360 is available."
                 )
 
                 Spacer(modifier = Modifier.height(16.dp))

@@ -81,7 +81,7 @@ tools/bench-ab.sh verify-config --title-id 584108FF \
     --before "$(awk '{print $3}' before.txt)"
 
 # 5. Assert every intended cvar actually applied, and that the right driver ran.
-adb pull /sdcard/Android/data/xendroid.compose/files/compose/xe.log xe.log
+adb pull /sdcard/Android/data/armx360.compose/files/compose/xe.log xe.log
 tools/bench-ab.sh assert-log --log xe.log \
     --expect game.readback_resolve=none \
     --expect game.render_area_dirty_extent=true \
@@ -261,7 +261,7 @@ unzip -p <apk> lib/arm64-v8a/libe.so | strings | grep -c '^log_gpu_pass_break_re
 
 ## One unattended-run caveat
 
-`am start -n xendroid.compose.debug/xendroid.compose.EmulatorHostActivity -a
+`am start -n armx360.compose.debug/xendroid.compose.EmulatorHostActivity -a
 xendroid.intent.action.xendroid --es game_uri <iso>` boots with no tap — the
 activity is `exported="true"` and boots from `surfaceCreated`
 (`EmulatorHostActivity.kt:449-471`). But on a device whose display is not being

@@ -447,10 +447,10 @@ Per-game config (`config/584108FF.config.toml`):
 log_gpu_frame_time_breakdown = true    # VkPassTime + VkPassId lines
 
 [Vulkan]
-vulkan_lib_path = '/data/user/0/xendroid.compose.debug/compose/driver/a6xx-instrumented-perf/libvulkan_freedreno.so'
+vulkan_lib_path = '/data/user/0/armx360.compose.debug/compose/driver/a6xx-instrumented-perf/libvulkan_freedreno.so'
 turnip_perf_sampler = '1'              # or 'tp' for the deep texture set
 turnip_perf_sampler_period_ms = 250
-turnip_perf_sampler_file = '/storage/emulated/0/Android/data/xendroid.compose.debug/files/compose/tu_perf.log'
+turnip_perf_sampler_file = '/storage/emulated/0/Android/data/armx360.compose.debug/files/compose/tu_perf.log'
 ```
 
 Reports: counter samples go to `turnip_perf_sampler_file`; the `tu_variant:` shader lines ignore
@@ -587,7 +587,7 @@ silently ignored (`config.cc`, `ReadGameConfig`). `TITLEID` is the 8-hex upperca
 
 ```sh
 adb shell "grep -E 'B10G11R11_UFLOAT|Loading game config' \
-  /sdcard/Android/data/xendroid.compose/files/compose/xe.log | head"
+  /sdcard/Android/data/armx360.compose/files/compose/xe.log | head"
 ```
 
 Both must hold:
@@ -624,7 +624,7 @@ there is no shader-cache warm-up to wait out. Still: **run twice, take the secon
 
   ```sh
   adb shell "grep -oE 'color[0-9] RT @ .*' \
-    /sdcard/Android/data/xendroid.compose/files/compose/xe.log | sort -u"
+    /sdcard/Android/data/armx360.compose/files/compose/xe.log | sort -u"
   ```
 
   If `k_2_10_10_10_FLOAT` does not appear, there is nothing to measure and the run proves nothing.

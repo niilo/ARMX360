@@ -3,7 +3,7 @@
 # control socket, so qrenderdoc's "Attach to Running Instance" lands on the
 # Vulkan renderer instead of the launcher process (which shows "API = None").
 #
-# Both xendroid.compose.free (launcher) and xendroid.compose.free:emu (renderer) create a
+# Both armx360.compose (launcher) and armx360.compose:emu (renderer) create a
 # Vulkan instance with the bundled VK_LAYER_RENDERDOC_Capture layer, so each
 # opens its own @renderdoc_3892X target-control socket. qrenderdoc auto-grabs
 # 38920, often the wrong one. This script identifies which socket :emu owns and
@@ -19,7 +19,7 @@
 set -euo pipefail
 
 # run-as/simpleperf need the debuggable variant; override with XENDROID_PKG.
-PKG="${XENDROID_PKG:-xendroid.compose.debug}"
+PKG="${XENDROID_PKG:-armx360.compose.debug}"
 EMU_PROC="${PKG}:emu"
 HOST_PORT="${1:-38920}"
 

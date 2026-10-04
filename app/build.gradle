@@ -26,7 +26,16 @@ android {
     ndkVersion '29.0.14206865'
 
     defaultConfig {
-        applicationId 'xendroid.compose'
+        // Install identity only. This is deliberately NOT the java namespace
+        // (still xendroid.compose), because libe.so resolves the JNI classes by
+        // FQN string -- emulator_xendroid.cpp:1781 FindClass("xendroid/compose/
+        // Emulator") plus 11 more sites, and the Java_xendroid_hardware_ProcessorInfo_*
+        // symbol in hardware_ProcessorInfo.cpp:8. Renaming the namespace would
+        // require editing every one of those strings, and a miss is a runtime-only
+        // failure on a device that no local build catches. applicationId and
+        // namespace are independent in AGP, so the fork gets its own identity
+        // (installs side by side with upstream) and the JNI boundary stays intact.
+        applicationId 'armx360.compose'
         // 29+ matches :emulator-core (native ELF TLS in libe.so).
         minSdk 29
         targetSdk 35
@@ -51,6 +60,17 @@ android {
     buildFeatures {
         compose true
         buildConfig true
+    }
+
+    // Where the in-app updater looks for releases. Overridable per build so a
+    // fork does not have to edit Kotlin to point at its own repo:
+    //     ./gradlew assembleRelease -Parmx360.releaseRepo=<owner>/<repo>
+    // Defaults to upstream XenDroid, which is the wrong answer for a fork --
+    // set it before publishing, or the app will offer upstream's APKs as its
+    // own updates. CI overrides this (see .github/workflows/ARMX360.yml).
+    buildTypes.all {
+        buildConfigField 'String', 'RELEASE_REPO',
+            "\"${project.findProperty('armx360.releaseRepo') ?: 'rfandango/XenDroid'}\""
     }
     // HWASan builds link against the shared sanitizer runtime, which has to
     // ship inside the APK: the platform copy is not on a normal app's search
@@ -80,7 +100,7 @@ android {
         // Own application id so a debug build installs alongside a release one.
         // The java namespace stays xendroid.compose, so JNI FindClass is unaffected.
         debug {
-            applicationIdSuffix '.debug'
+            applicationIdSuffix '.debug'   // -> armx360.compose.debug
             versionNameSuffix '-debug'
         }
         release {

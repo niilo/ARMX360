@@ -19,6 +19,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "XenDroid"
+rootProject.name = "ARMX360"
 include ':emulator-core'
 include ':app'

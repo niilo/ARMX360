@@ -1,4 +1,4 @@
-name: XenDroid
+name: ARMX360
 on:
   pull_request:
     branches: main
@@ -277,10 +277,17 @@ jobs:
 
         ./gradlew assembleRelease \
           -PgitHash=${{ steps.git.outputs.hash }} \
+          -Parmx360.releaseRepo=${{ github.repository }} \
           --build-cache \
           --parallel \
           --max-workers=$(nproc) \
           --no-daemon
+
+    # -Parmx360.releaseRepo bakes BuildConfig.RELEASE_REPO (owner/repo of the
+    # in-app updater's release poll) from github.repository, so a fork's APK
+    # checks the fork's own releases instead of the compiled-in upstream
+    # default. Tags created below are ARMX360-<sha>, matching
+    # RELEASE_TAG_PREFIX in updater.kt.
 
     ##################################################################
     # Sign APK
@@ -315,7 +322,7 @@ jobs:
       if: env.HAS_KEYSTORE == 'true'
       run: |
         APK=$(ls app/build/outputs/apk/release/*.apk)
-        mv "$APK" "XenDroid_Release_${{ steps.vars.outputs.sha_short }}.apk"
+        mv "$APK" "ARMX360_Release_${{ steps.vars.outputs.sha_short }}.apk"
 
     ##################################################################
     # Delete old artifacts if needed
@@ -362,8 +369,8 @@ jobs:
       if: env.HAS_KEYSTORE == 'true' && (github.event_name != 'push' || github.ref != 'refs/heads/main')
       uses: actions/upload-artifact@v4
       with:
-        name: XenDroid_Release_${{ steps.vars.outputs.sha_short }}
-        path: XenDroid_Release_${{ steps.vars.outputs.sha_short }}.apk
+        name: ARMX360_Release_${{ steps.vars.outputs.sha_short }}
+        path: ARMX360_Release_${{ steps.vars.outputs.sha_short }}.apk
 
     - name: Create GitHub Release
       # Same gate. Without it a fork with no keystore would still reach this
@@ -371,7 +378,7 @@ jobs:
       if: env.HAS_KEYSTORE == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: XenDroid-${{ steps.vars.outputs.sha_short }}
-        name: XenDroid ${{ steps.vars.outputs.sha_short }}
+        tag_name: ARMX360-${{ steps.vars.outputs.sha_short }}
+        name: ARMX360 ${{ steps.vars.outputs.sha_short }}
         generate_release_notes: true
-        files: XenDroid_Release_${{ steps.vars.outputs.sha_short }}.apk
+        files: ARMX360_Release_${{ steps.vars.outputs.sha_short }}.apk
