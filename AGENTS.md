@@ -247,6 +247,62 @@ tests and lint and simply skips producing a signed release.
 
 ---
 
+## 3a. The release signing key
+
+The key lives **outside this repository** and never enters it. This section
+records *where* and *how*; it deliberately contains no password or key material.
+
+| Item | Value |
+|---|---|
+| Keystore | `~/.armx360-signing/armx360-release.jks` (PKCS12, outside the repo) |
+| Alias | `armx360` |
+| Owner | `CN=ARMX360, OU=Release Signing, O=ARMX360, L=-, ST=-, C=FI` |
+| **Cert SHA-256** | `F0:2C:4F:E2:5A:0C:75:9D:63:B4:95:0C:8C:AD:B3:37:3E:78:F0:7A:CF:A8:B8:3D:E1:0F:AB:A9:F4:F8:A7:CC` |
+| Valid | 2026-10-04 → 2054-02-19 |
+
+**The cert SHA-256 is the identity.** It is published in every signed APK, so
+`apksigner verify --print-certs <apk>` is how you confirm an APK really came
+from this project. Never treat a keystore *file* hash as the identity:
+re-encrypting or re-saving the file rewrites the bytes.
+
+GitHub secrets are **write-only**. If `KEYSTORE_PASSWORD` is lost, CI cannot
+read it back — the keystore file plus the password is the whole backup, and
+losing both means a new certificate, which Android will refuse to upgrade over
+(`INSTALL_FAILED_UPDATE_INCOMPATIBLE`). Users would have to uninstall first.
+Keep an encrypted copy of the keystore somewhere off this machine.
+
+### Rotating the password
+
+Rotating the **password** (not the key) is safe and invisible to users: the
+certificate is unchanged, so installed builds keep upgrading. Verified
+2026-10-04 — the released `d74934e` cert digest was identical before and after.
+
+```bash
+cp ~/.armx360-signing/armx360-release.jks{,.pre-rotate.bak}
+printf '%s\n%s\n' "$NEWPW" "$NEWPW" | keytool -storepasswd \
+    -keystore ~/.armx360-signing/armx360-release.jks -storepass "$OLD"
+```
+
+Then re-set `KEYSTORE_PASSWORD` **and** `KEY_PASSWORD`, and note that
+`ANDROID_KEYSTORE_BASE64` must be refreshed from the new file bytes even though
+the certificate inside did not change. Confirm afterwards with
+`apksigner verify --print-certs`, not with `keytool -list` alone.
+
+Two traps, both hit on 2026-10-04:
+
+- **Rehearse on a copy.** An empty or wrong password makes `keytool` re-prompt
+  and exit *leaving the keystore unchanged* — a silent no-op that reads as
+  success. `openssl` is not installed on this machine; generate with
+  `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`.
+- **Never redact a secret with `sed 's/=.*/.../'`.** It assumes the value
+  follows an `=`. The keystore password contains `=` itself, so the substitution
+  fired mid-password and printed 23 of 40 characters into a chat transcript.
+  That forced this rotation. Redact by matching the known key and replacing only
+  the remainder (`sed -E 's/^(password[^:]*:).*/\1 <REDACTED>/'`), or better,
+  never print the line at all.
+
+---
+
 ## 4. Commit and PR conventions
 
 - **Subject: `[Area] Imperative summary, describing the effect.`**
