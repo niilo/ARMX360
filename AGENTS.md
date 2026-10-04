@@ -2,10 +2,36 @@
 
 Working notes for AI coding agents (and humans) changing this repository.
 
-XenDroid is an Android (arm64-v8a) port of a **Xenia Edge** fork. Most of the C++
-under `emulator-core/src/main/cpp/xenia/src/xenia/` is upstream; the interesting
-work is in the Vulkan command processor, the render-target cache, the Android
+**ARMX360** is an Android (arm64-v8a) port of a **Xenia Edge** fork, itself a
+fork of upstream XenDroid. Most of the C++ under
+`emulator-core/src/main/cpp/xenia/src/xenia/` is upstream; the interesting work
+is in the Vulkan command processor, the render-target cache, the Android
 JNI/Compose frontend, and the measurement tooling in `tools/`.
+
+### The one naming fact to get right
+
+The app has **two names that deliberately do not match**, and conflating them is
+the easiest way to break a build here:
+
+| | Value | Where |
+|---|---|---|
+| Install identity | `armx360.compose` | `applicationId`, `app/build.gradle:38` |
+| Java/Kotlin package | `xendroid.compose` | `namespace`, `app/build.gradle:22` |
+| Debug install | `armx360.compose.debug` | `applicationIdSuffix '.debug'`, `app/build.gradle:103` |
+
+`applicationId` and `namespace` are independent in AGP, which is what lets this
+fork install **beside** upstream XenDroid instead of replacing it — verified on
+a Pocket S / Android 13, where `armx360.compose.debug` and the pre-existing
+`xendroid.compose.debug` coexist.
+
+**Do not "tidy" the Java package to match the app name.** `libe.so` resolves its
+JNI classes by FQN *string*: `emulator_xendroid.cpp:1781`
+`FindClass("xendroid/compose/Emulator")` plus twelve further sites, and
+`Java_xendroid_hardware_ProcessorInfo_gpu_1get_1physical_1device_1name_1vk` in
+`hardware_ProcessorInfo.cpp:8`. Renaming the package means editing every one of
+those, and a single miss is a runtime-only failure no local build catches. The
+thirteen FQN strings are present verbatim in the shipped `libe.so` — check them
+with `unzip -p <apk> lib/arm64-v8a/libe.so | strings | grep '^xendroid/'`.
 
 Read this before your first change. The conventions below are not stylistic
 preferences — several exist because the opposite was done and the result was a
@@ -123,7 +149,7 @@ tools/bench-ab-test.sh               # offline; 36 checks, no device needed
 - `:app:testDebugUnitTest`, **not** `testReleaseUnitTest`. Release has
   `minifyEnabled` + `shrinkResources`; R8 only rewrites the APK, so a release
   test run exercises the same 14 classes with none of R8's risk while paying for
-  the slow link. See `.github/workflows/XenDroid.yml:217`.
+  the slow link. See `.github/workflows/ARMX360.yml:217`.
 - Tests run **before** the APK build in CI so a red test is reported as a test
   failure rather than "build failed". Keep that ordering.
 - `tools/bench-ab-test.sh` needs no device and no JDK. **Run it after touching
@@ -131,7 +157,31 @@ tools/bench-ab-test.sh               # offline; 36 checks, no device needed
   firing. If you change a fixture, the suite's coupled expectation must change
   too; editing one alone fails a check (intentional, and it works).
 - Do not add a blocking lint gate without a checked-in baseline; lint is
-  advisory on purpose (`continue-on-error: true`, `.github/workflows/XenDroid.yml:261`).
+  advisory on purpose (`continue-on-error: true`, `.github/workflows/ARMX360.yml:261`).
+
+The SPIR-V tools are a **hard configure-time failure**, not a warning: the
+`foreach(_tool glslangValidator spirv-opt spirv-dis)` at `CMakeLists.txt:64`
+raises `FATAL_ERROR` at `CMakeLists.txt:68` naming the missing tool, because
+`gen_android_spirv.py` (called at `CMakeLists.txt:91`) compiles the GPU/UI
+shaders to SPIR-V during configure. A clean machine without them fails in ~25s
+with a message that names the fix; do not go looking for a C++ error when you
+see it.
+
+There is **no Dockerfile and no local container path** in this tree. The
+containerised build is CI only: the whole job runs in
+`ghcr.io/cirruslabs/android-sdk:35` (`.github/workflows/ARMX360.yml:17-18`).
+The only Dockerfiles that ever existed here were inside vendored third-party
+code and were deleted when those became submodules — do not go looking for one,
+and do not assume `./gradlew` alone is sufficient on a bare machine.
+
+### Verified figures
+
+Measured, not estimated — re-measure before quoting them:
+
+- `:app:testDebugUnitTest` → **89 tests, 0 failures**, across **14** classes.
+- `:app:assembleDebug` → **6m02s** cold (native tree compiled from scratch, no
+  ccache). The "~8-9 min" figure quoted elsewhere refers to a release link with
+  ThinLTO, which is a different build.
 
 ### Testing on your own device needs no secrets at all
 
@@ -144,15 +194,15 @@ entirely in CI via `apksigner`. So local testing never touches a keystore:
 
 Two things to know:
 
-- The debug variant has `applicationIdSuffix '.debug'` (`app/build.gradle:83`),
-  so it installs **alongside** a release build as `xendroid.compose.debug` with
+- The debug variant has `applicationIdSuffix '.debug'` (`app/build.gradle:103`),
+  so it installs **alongside** a release build as `armx360.compose.debug` with
   no signature conflict. That is the variant to use for measurement: it is
   `run-as`-capable and carries the newer instrumentation (trap 9).
 - **Grant All Files Access before the first launch**, or
   `EmulatorHostActivity.kt:179-185` will `finish()` immediately on the cached
   `Environment.isExternalStorageManager()` value.
 
-For a minified (`minifyEnabled` + `shrinkResources`, `app/build.gradle:86-91`)
+For a minified (`minifyEnabled` + `shrinkResources`, `app/build.gradle:106-111`)
 release-variant APK on your own device, `assembleRelease` produces an **unsigned**
 APK; sign it with a throwaway key of your own via
 `$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner`. It will not upgrade an existing
@@ -204,6 +254,17 @@ tests and lint and simply skips producing a signed release.
   the compiled-in `DEFINE_bool`. If they disagree the UI shows a toggle state
   the emulator is not in, and `isModified()` badges it wrongly.
   `SettingsSchemaTest.bool_defaults_match_effective_native_default` now enforces
+  this for every comparable Bool — a new cvar-backed setting is covered
+  automatically. Do not "fix" a divergence by editing the C++ default unless you
+  intend a behaviour change; that changes what a stock install runs.
+
+Adding a setting does **not** update itself, though: the inventory counts in
+`SettingsSchemaTest` (`total_entry_count_is_138`,
+`counts_by_type_match_verified_inventory`) are hand-maintained literals that went
+stale once already. If you add a setting and see those two fail, the fix is to
+re-derive the counts — do not delete the assertions to make the build green.
+
+---
 ## 6. Measurement discipline
 
 Performance work here is easy to get wrong and hard to notice. The traps are
@@ -255,7 +316,7 @@ The attached device may be the user's real one.
 - Restore anything you change: `appops set <pkg> MANAGE_EXTERNAL_STORAGE default`,
   delete created per-game configs, `settings delete global
   stay_on_while_plugged_in`, force-stop what you started.
-- Prefer the **debug** package (`xendroid.compose.debug`) for measurement — it is
+- Prefer the **debug** package (`armx360.compose.debug`) for measurement — it is
   `run-as`-capable and usually carries newer instrumentation. It needs All Files
   Access granted **before** launch: `EmulatorHostActivity.kt:179-185` checks
   `Environment.isExternalStorageManager()` at runtime, so a process started
@@ -272,16 +333,38 @@ The attached device may be the user's real one.
 
 | Path | What |
 |---|---|
-| `app/src/main/java/xendroid/compose/` | Kotlin/Compose frontend |
-| `app/src/test/java/xendroid/compose/` | 14 JVM unit test classes |
+| `app/src/main/java/xendroid/compose/` | Kotlin/Compose frontend (package is `xendroid.compose` — see above) |
+| `app/src/test/java/xendroid/compose/` | 14 JVM unit test classes, 89 tests |
 | `emulator-core/src/main/cpp/xenia/src/xenia/` | Xenia C++ (mostly upstream) |
 | `.../gpu/vulkan/` | command processor, render-target cache — where GPU work lands |
 | `emulator-core/src/main/assets/config/default_config.toml` | bundled cvar template |
 | `tools/bench-ab.sh` | on-device A/B harness |
 | `tools/bench-ab-test.sh` | its offline test suite |
 | `tools/testdata/bench-ab/` | synthetic `xe.log` fixtures |
+| `design/` | launcher icon master artwork + the script that installs it |
 | `docs/*.md` | investigation ledgers; read before touching GPU perf |
 | `BUILD.md` / `GAME_COMPAT.md` | toolchain; per-game config mechanism |
+
+The `mipmap-*` launcher resources are **generated output**. Edit
+`design/armx360_icon_512.png` and re-run `python3 design/install_icon.py`;
+afterwards `git status` should show no change under `app/src/main/res/`, which
+is the check that the tracked artwork is really the icon that shipped. The
+master must stay outside `app/src/main/assets/` or it gets bundled into the APK.
+
+Three things that break silently if edited on one side only:
+
+- **Release tag prefix.** `tag_name: ARMX360-<sha>` in
+  `.github/workflows/ARMX360.yml` and `RELEASE_TAG_PREFIX` in
+  `app/src/main/java/xendroid/compose/updater/updater.kt`. A mismatch does not
+  error — it compares `ARMX360-<sha>` against a bare sha and reports a phantom
+  update on every launch.
+- **Updater release repo.** `BuildConfig.RELEASE_REPO` comes from
+  `-Parmx360.releaseRepo` (`app/build.gradle:72`); CI sets it from
+  `github.repository`. Left unset it defaults to upstream XenDroid, so a fork
+  will silently offer upstream's APKs as its own updates.
+- **Workflow name.** `cache-cleanup.yml` triggers `workflow_run` on the workflow
+  **name**, not the filename, so renaming `ARMX360.yml` without updating its
+  `name:` leaves cache pruning permanently unsatisfied and silent.
 
 Note `config.cc` is at `xenia/src/xenia/config.cc`. There is **no**
 `xenia-base/` directory in this tree, despite what some older docs and comments
@@ -303,10 +386,7 @@ imply.
   substitute a different device or a simulated result — an a830 question
   answered on an Adreno 740 is worse than no answer.
 
-  this for every comparable Bool — a new cvar-backed setting is covered
-  automatically. Do not "fix" a divergence by editing the C++ default unless you
-  intend a behaviour change; that changes what a stock install runs.
-- Keep JVM tests free of device/JNI dependencies. `SettingsSchemaTest` reads
+  - Keep JVM tests free of device/JNI dependencies. `SettingsSchemaTest` reads
   repo sources directly, which is how it stays honest without a cvar list.
 
 ---
