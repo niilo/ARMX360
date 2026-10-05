@@ -164,6 +164,16 @@ So on this panel the emulator shades **3.69 M pixels per presented frame** to
 display **0.92 M pixels** of guest output — **4× the necessary fill**, every
 frame, in a pass that is pure presentation scaling.
 
+**That 4× is a floor, and understates it.** The present path can chain several
+effect passes, not one. `GetGuestOutputPaintFlow` (`presenter.cc:671`) appends up
+to `postprocess_ffx_fsr_max_upsampling_passes` FSR EASU passes before RCAS or
+bilinear (`presenter.cc:886-902`), each writing a **full intermediate image**;
+the bundled config ships that at **4**, confirmed in the device log's CONFIG DUMP.
+So with the FSR effect selected a frame is not one upscale quad but a chain, and
+the pixel total is correspondingly larger. Every effect in `GuestOutputPaintEffect`
+is an upscale filter — the enum has no straight copy — so the present pass count
+is a scaling cost in all cases.
+
 This is invisible in all four existing documents because they were measured on
 panels whose native resolution is close to 720p. On a 1440×2560 panel the
 present pass is a structural cost, and it is the kind of cost that does *not*
@@ -309,6 +319,28 @@ render-path change ships behind a cvar whose help text states the tradeoff and t
 measurement needed to justify turning it on, with `GAME_COMPAT.md` as the
 per-title escape hatch. Whether it wins depends on the panel-to-guest resolution
 ratio, which is a **per-device and per-title** question.
+
+**Its instrumentation has shipped** (`log_present_path_cost`, a `VkPresentCost`
+line in the Vulkan presenter):
+
+```
+VkPresentCost: 60 frames, 1.0 passes/fr, present=3.69Mpx/fr guest=0.92Mpx/fr \
+               ratio=4.00x swapchain=2560x1440
+```
+
+*(format only — not measured)*
+
+That reports pass count and the pixel ratio rather than a time, because **the
+present path is not covered by any existing counter**: `VkPassTime` buckets guest
+render passes by framebuffer extent, and the present pass is none of those. A
+time-based version would need new GPU timestamps on the present submission, which
+is a larger change than the ratio; the ratio is what decides whether Rank 1 is
+worth attempting at all, and it needs no query pool.
+
+**What the ratio does not tell you.** It counts pixels, not the per-pixel cost of
+whichever shader each pass runs, so FSR/CAS passes look the same as bilinear
+despite being dearer. And it says nothing about compositing. It is a floor, and
+it is a locating tool, not a measurement of the cost.
 
 ### Rank 2 — Narrow the shared-memory barrier across usage flips
 
