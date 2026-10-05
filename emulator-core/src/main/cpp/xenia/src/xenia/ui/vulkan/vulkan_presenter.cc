@@ -9,6 +9,7 @@
 
 #include "xenia/ui/vulkan/vulkan_presenter.h"
 
+#include <chrono>
 #include <cstdint>
 
 #include "xenia/base/assert.h"
@@ -30,6 +31,29 @@
 #if XE_PLATFORM_WIN32
 #include "xenia/ui/surface_win.h"
 #endif
+
+DEFINE_bool(
+    log_present_path_cost, false,
+    "Report how many pixels the presentation path shades per frame versus how "
+    "many the guest produced, once per second, as a single 'VkPresentCost' "
+    "line. Purely diagnostic: no rendering behaviour depends on it.\n"
+    "WHY. The guest frontbuffer is at most 1280x720, but the swapchain is the "
+    "window size -- 2560x1440 on a 1440x2560 panel -- and each effect pass is a "
+    "full-viewport quad. So the present path shades more pixels than the guest "
+    "drew, every frame, purely to scale. That cost is absent from the guest "
+    "pass timings (VkPassTime only buckets guest render passes), so it shows up "
+    "only as inter-pass time. See docs/x360-arch-emulation-study.md section 4.1.\n"
+    "passes is the number of chained effect passes, which is 1 for a plain "
+    "stretch but can be several: with the FSR effect, "
+    "postprocess_ffx_fsr_max_upsampling_passes (4 in the bundled config) adds "
+    "that many EASU passes before RCAS, each writing a full intermediate "
+    "image. present_Mpx/guest_Mpx is therefore a FLOOR on the overdraw, not a "
+    "total: it counts pixels, not the per-pixel cost of whichever shader each "
+    "pass runs, and it says nothing about the cost of compositing.\n"
+    "OFF BY DEFAULT and diagnostic only -- never read an fps number off a run "
+    "with the guest-side breakdown cvars on, since that path stalls the queue "
+    "every submission. This cvar does not stall anything.",
+    "GPU");
 
 // Note: If the priorities in the description are changed, update the actual
 // present mode selection logic.
@@ -1615,6 +1639,26 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
         guest_output_properties, paint_context_.swapchain_extent.width,
         paint_context_.swapchain_extent.height, max_framebuffer_extent.width,
         max_framebuffer_extent.height, guest_output_paint_config);
+    // Diagnostic only (log_present_path_cost). Counted here because this is the
+    // one point where the whole flow is known: effect_count is final, and
+    // effect_output_sizes[] carries each pass's viewport. See
+    // docs/x360-arch-emulation-study.md section 4.1 -- this is the quantity that
+    // ranks the present-path overdraw, and it is invisible to the guest pass
+    // timings because those only bucket guest render passes.
+    if (cvars::log_present_path_cost && guest_output_flow.effect_count) {
+      uint64_t present_pixels = 0;
+      for (size_t i = 0; i < guest_output_flow.effect_count; ++i) {
+        const uint64_t w = guest_output_flow.effect_output_sizes[i].first;
+        const uint64_t h = guest_output_flow.effect_output_sizes[i].second;
+        present_pixels += w * h;
+      }
+      present_cost_frames_ += 1;
+      present_cost_passes_ += guest_output_flow.effect_count;
+      present_cost_present_pixels_ += present_pixels;
+      present_cost_guest_pixels_ += uint64_t(
+          guest_output_properties.frontbuffer_width) *
+          uint64_t(guest_output_properties.frontbuffer_height);
+    }
     if (guest_output_flow.effect_count) {
       // Store the main target reference to the guest output image so it's not
       // destroyed while it's still potentially in use by main target painting
@@ -2194,6 +2238,44 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
       XELOGE(
           "VulkanPresenter: Failed to submit the UI drawing fence signal: {}",
           vk::to_string(vk::Result(ui_signal_submit_result)));
+    }
+  }
+
+  // Diagnostic only (log_present_path_cost): emit the per-second summary here,
+  // the one point every painted frame reaches exactly once on its way to the
+  // present. Reset after reporting so the figures mean "since the last report",
+  // matching the guest-side counters in the command processor.
+  if (cvars::log_present_path_cost) {
+    // steady_clock, not Clock::QueryGuestTickCount(): that is the guest time
+    // base, which does not advance in wall-clock terms while the guest is
+    // paused or clock-throttled, and would make this report never fire. Same
+    // source CommandProcessor::FrameStatsNow uses for its per-second reports.
+    const uint64_t now_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+    if (present_cost_last_report_ns_ == 0) {
+      present_cost_last_report_ns_ = now_ns;
+    } else if (now_ns - present_cost_last_report_ns_ >= 1000000000ull &&
+               present_cost_frames_) {
+      const double f = static_cast<double>(present_cost_frames_);
+      const double present_mpx =
+          static_cast<double>(present_cost_present_pixels_) / f / 1e6;
+      const double guest_mpx =
+          static_cast<double>(present_cost_guest_pixels_) / f / 1e6;
+      XELOGI(
+          "VkPresentCost: {:.0f} frames, {:.1f} passes/fr, present={:.2f}Mpx/fr "
+          "guest={:.2f}Mpx/fr ratio={:.2f}x swapchain={}x{}",
+          present_cost_frames_, static_cast<double>(present_cost_passes_) / f,
+          present_mpx, guest_mpx,
+          guest_mpx > 0.0 ? present_mpx / guest_mpx : 0.0,
+          paint_context_.swapchain_extent.width,
+          paint_context_.swapchain_extent.height);
+      present_cost_frames_ = 0;
+      present_cost_passes_ = 0;
+      present_cost_present_pixels_ = 0;
+      present_cost_guest_pixels_ = 0;
+      present_cost_last_report_ns_ = now_ns;
     }
   }
 

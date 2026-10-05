@@ -492,6 +492,19 @@ class VulkanPresenter final : public Presenter {
       guest_output_images_;
   VulkanGPUCompletionTimeline guest_output_image_refresher_completion_timeline_;
 
+  // Present-path pixel accounting for log_present_path_cost. Diagnostic only,
+  // and accumulated per painted frame so the report can be per-second like the
+  // guest-side counters. present_pixels sums the viewport area of every
+  // guest-output effect pass (they are all full-viewport quads, and the flow can
+  // chain several); guest_pixels is the guest frontbuffer area. Written only by
+  // the painting path, so no extra synchronisation is needed beyond what
+  // painting already has.
+  uint64_t present_cost_frames_ = 0;
+  uint64_t present_cost_passes_ = 0;
+  uint64_t present_cost_present_pixels_ = 0;
+  uint64_t present_cost_guest_pixels_ = 0;
+  uint64_t present_cost_last_report_ns_ = 0;
+
   // UI submission completion timeline with the submission index that can be
   // given to UI drawers (accessible from the UI thread only, at any time).
   VulkanGPUCompletionTimeline ui_completion_timeline_;
