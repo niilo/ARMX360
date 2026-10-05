@@ -1,7 +1,8 @@
 # Xbox 360 vs Snapdragon 8 Gen 2 — architecture comparison and emulation optimization plan
 
 **Author:** GPU/CPU agent · **Status:** architecture study complete, plan reviewed,
-**no performance change shipped, nothing measured on device** · **Related:**
+**Rank 4 shipped** (instrumentation only — no rendering behaviour changed),
+Ranks 1–3 **not** implemented, nothing measured on device · **Related:**
 `docs/gw-gpu-bottleneck-investigation.md`, `docs/gpu-pass-count-levers.md`,
 `docs/gpu-fs-occupancy-analysis.md`, `docs/benchmark-harness.md`.
 
@@ -174,8 +175,11 @@ scaling is **inter-pass time by construction** and is exactly what
 device (`logs/session_20261004-170249.zip`, a different boot, 2026-10-04) contains
 the same pair, and names both sides explicitly:
 
-- `VulkanPresenter: Created 2560x1440 swapchain …` — twice in that boot, so the
-  presenter rebuilt the same oversized swapchain more than once.
+- `VulkanPresenter: Created 2560x1440 swapchain …` — **4** times in that boot, all
+  `presentation mode 1` (`VK_PRESENT_MODE_IMMEDIATE_KHR`), so the presenter built
+  the same oversized swapchain repeatedly. Re-derived from the log 2026-10-05
+  (lines 397, 1379, 56008, 56985); an earlier draft of this file said "twice",
+  which was wrong.
 - `VdQueryVideoMode #0..#3: reporting 1280x720 (cvar mode 8)` — the guest's own
   video mode, and `8` is the `internal_display_resolution` value for 1280×720
   (`graphics_system.cc:27-49`). The guest is telling the host 720p.
@@ -308,6 +312,11 @@ ratio, which is a **per-device and per-title** question.
 
 ### Rank 2 — Narrow the shared-memory barrier across usage flips
 
+> **Scope note.** This is *narrowing* the barrier's byte range. It is **not** the
+> "defer the barrier past the pass" change, which is refuted in §6 — the barrier
+> must stay framebuffer-global, so its extent is adjustable but its *position* is
+> not. Do not merge these two.
+
 **Observation.** §4.2: 512 MB `VK_WHOLE_SIZE` barriers per usage flip, each
 forcing a render-pass end.
 
@@ -320,6 +329,11 @@ flips would let most of them narrow.
 is a race that manifests as intermittent, unreproducible corruption rather than a
 crash — the worst possible failure mode to ship unmeasured. It must follow a
 successful A/B on a rendering run.
+
+Note the ceiling on this one: the pass end at `vulkan_command_processor.cc:3142`
+still happens, because the barrier is framebuffer-global regardless of its size
+(§6). Rank 2 can reduce the *cost* of a break, not its *number*, which is the term
+`barriers=` in `VkPassBreaks` actually counts.
 
 ### Rank 3 — Skip the `host_buffer_` mirror barrier when unused
 
@@ -336,6 +350,71 @@ no ordering change.
 **logging** change, not an optimisation — cheap, safe, and it converts a guess
 into a number.
 
+**Implemented.** A `VkOverhead` line now reports shared-memory barrier shape and
+EDS re-dirty volume in the same once-per-second report as `VkPassBreaks`, gated on
+`log_gpu_pass_break_reasons`:
+
+```
+VkOverhead: shmem=12.0/fr whole=3.0 ranged=9.0 ranged_MB=0.42 |
+            eds_redirty=4.0/fr binds=2.0
+```
+
+*(the numbers above illustrate the format only — not measured)*
+
+Three design points worth stating, because each is a trap rather than a detail:
+
+- **The counters are pure attribution.** No barrier is added, removed, narrowed
+  or reordered anywhere, and no GPU query is issued, so this cannot change what is
+  rendered. That is what makes it shippable without a device run; Rank 2 is not.
+- **It is gated on `log_gpu_pass_break_reasons`, not `log_gpu_frame_time_breakdown`.**
+  These counters need no GPU timestamps, so putting them on the cheaper gate means
+  the cost of reading them stays confined to the diagnostic path.
+- **`eds_redirty` reads 0 when extended dynamic state is unsupported**, because the
+  re-dirty it counts is inert then. The guard is
+  `pipeline_cache_->dynamic_state_capabilities().extended_dynamic_state` — the
+  same capability `UpdateDynamicState` gates its emission on — so "0" means
+  "nothing happened", not "nothing to do". `UpdateDynamicState`'s `eds_caps` is a
+  local and not reachable from `BindExternalGraphicsPipeline`, hence the query.
+
+The counters make Rank 2 decidable instead of hypothetical. **A run where
+`whole` dominates is the only run in which narrowing the usage-flip barrier has
+anything to narrow** — and that is the precondition to check before attempting a
+memory-ordering change whose failure mode is intermittent corruption rather than a
+crash.
+
+### Rank 5 — `appCategory="game"`: a deliberate omission, do not add it casually
+
+`[CODE]` **The app does not declare `android:appCategory`** — the `<application>`
+element (`app/src/main/AndroidManifest.xml:27-33`) carries `name`, `allowBackup`,
+`icon`, `label`, `supportsRtl` and `theme`, and no `appCategory`;
+`grep 'appCategory' app/src/main/AndroidManifest.xml` returns nothing.
+
+`[SRC]` This matters because Game Mode is gated on exactly that declaration, and
+the trade runs *against* an emulator:
+
+| Dial | Direction |
+|---|---|
+| Declare `appCategory="game"` → Game Mode interventions apply (backbuffer-resize savings, FPS throttling) | **gains** |
+| …but on **Android 15+** games default to **60 Hz** and must explicitly request more, so declaring as a game **opts into the 60 Hz default** | **loses** |
+
+For an emulator whose purpose is presenting 360 content at the panel's native
+rate, the second row is the one that matters, and this device is Android 13
+where the high-refresh behaviour does not yet apply — so the calculus **changes
+by OS version**. The honest reading is that this is a **decision that must be
+made deliberately per supported OS range, not a missing line**. It is listed here
+rather than in §6 because it is a genuine open question, not a dead end.
+
+Note also that FPS throttling can only *lower* the rate; it cannot rescue a
+GPU-bound emulator, and this fork already paces to the guest's own vblank rate
+(`framerate_limit_auto`). So the gain side is thin.
+
+**Not shipped, deliberately.** A manifest attribute that trades away the native
+refresh rate on Android 15+ is not something to enable on principle, and it cannot
+be A/B'd on this Android 13 device at all — the condition that makes it harmful
+does not exist here. Per `AGENTS.md` §8 this is recorded as an open question
+rather than guessed at. Verify the current Android 15+ behaviour before acting;
+the claim above is sourced from the study in §2, not from a device run.
+
 ### Refuted — do not re-propose
 
 - **Render-area shrinking.** Built, verified firing, and **measured to buy
@@ -350,6 +429,46 @@ into a number.
   (`docs/gw-gpu-bottleneck-investigation.md` §10, trap 4). Shader *size* tracks
   reality; instruction mix does not.
 - **Any claim resting on the unverified Xenos shader-ISA model** (§2.2).
+- **Deferring the per-draw shared-memory barrier past the open render pass.**
+  This is `docs/gpu-pass-count-levers.md` §2 Rank 4, and it was proposed here as
+  `Rank 1` before being checked. **It is not viable, and the reason is worth
+  recording because the surface argument for it is convincing and wrong.**
+
+  The argument *for* it is: `SubmitBarriers` ends the open pass for **any**
+  pending barrier (`vulkan_command_processor.cc:3142`), and the per-draw
+  shared-memory barrier touches only a **buffer**, never an attachment — so on a
+  tiler, where a pass end is a GMEM→DDR→GMEM round trip, that end looks pure
+  waste. Buffer-only, therefore not framebuffer-global, therefore safe to record
+  inside the rendering scope.
+
+  **Each step is wrong.** Vulkan's framebuffer-space stages are FRAGMENT_SHADER,
+  EARLY/LATE_FRAGMENT_TESTS and COLOR_ATTACHMENT_OUTPUT — the test is the *stage
+  mask*, not what the barrier's descriptors happen to name. And the per-draw mask
+  does contain FRAGMENT_SHADER: `VulkanSharedMemory::GetUsageMasks` builds
+  `VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | guest_shader_pipeline_stages_`
+  (`vulkan_shared_memory.cc:986`), and `guest_shader_pipeline_stages_` is
+  `VERTEX_SHADER | FRAGMENT_SHADER` (`vulkan_command_processor.cc:389-390`). So
+  the one barrier that fires per draw **is** framebuffer-global, and recording it
+  inside a rendering scope is exactly what the spec forbids.
+
+  The residue that survives the correct test — barriers with no framebuffer-space
+  stage at all — is **nearly empty**, because the per-draw case is excluded. So
+  this would buy approximately nothing *and* risk intermittent corruption. Note the
+  shape of the error: a change can be simultaneously *unprofitable* and
+  *incorrect*, and filtering it down to the provably-safe subset silently removes
+  the reason it was proposed. **Correctness of the subset was never the difficulty;
+  the subset was always the wrong set.** Do not re-derive this from "it's only a
+  buffer barrier" — check the stage mask.
+
+  The adjacent case that *is* handled correctly, for contrast:
+  `PreparePendingDrawPassTransferBarriers` uses
+  `VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT` (`vulkan_render_target_cache.cc:3904`)
+  precisely because those transfer *sources* are sampled by in-pass fragment
+  shaders, and emits them before the pass begins (`:3626`) — so they stay
+  framebuffer-global and never need a mid-pass break. `vulkan_hoist_shmem_uploads`
+  (`:36-41`) is the same idea applied narrowly to uploads, and is the pattern to
+  extend if `barriers=` ever proves to be the dominant term. Rank 4's own warning
+  ("not recommended blind") was correct; this entry records why.
 
 ---
 
@@ -383,9 +502,24 @@ In priority order — the first item is the only real blocker:
   own description of Adreno's binning model was unreachable this session, so the
   tiler contrast rests on measurements already taken on Adreno silicon in this
   repository (§3.1) — stronger evidence than a marketing datasheet.
-- **Four ranked candidates**, each traced to verified code, **none shipped**, none
+- **Five ranked candidates**, each traced to verified code, **none shipped**, none
   carrying a performance claim.
+- **One candidate from this session's own review was refuted by checking it** — the
+  barrier-deferral that was briefly ranked first (§6). It is recorded with its
+  reasoning so the same convincing-but-wrong argument is not re-derived from
+  "it's only a buffer barrier".
 - **Measurement is blocked**, recorded as blocked rather than papered over.
+
+### 8.1 Corrections made to this document after review
+
+Recorded per `AGENTS.md` §1 rather than silently fixed:
+
+- §4.1 said the oversized swapchain was created "twice" in the boot on device.
+  Re-derived from `session_20261004-170249.zip`'s `xe.log`: it is **4** times
+  (lines 397, 1379, 56008, 56985), all at presentation mode 1. The number was
+  wrong; the conclusion it supported was not.
+- The barrier-deferral candidate was **ranked first when this document was
+  drafted**, and that ranking was wrong. It is moved to §6 with the reason.
 
 Per `AGENTS.md` §4 ("prefer recording a negative result over shipping an
 unmeasured optimisation"), the correct deliverable here was the study and the
