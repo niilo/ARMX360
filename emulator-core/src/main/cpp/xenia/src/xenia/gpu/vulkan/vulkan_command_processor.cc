@@ -2386,6 +2386,21 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
             pass_end_counts_[size_t(PassEndReason::kSubmissionEnd)] / f,
             pass_end_counts_[size_t(PassEndReason::kPrimitiveSetup)] / f,
             pass_end_counts_[size_t(PassEndReason::kUnattributed)] / f);
+        // Shared-memory barrier shape and EDS re-dirty volume, the two costs
+        // docs/x360-arch-emulation-study.md ranks 2 and 4 but which had no
+        // counter at all. shmem_whole is the VK_WHOLE_SIZE usage-flip case over
+        // a 512 MB buffer; a whole-dominated run is the only run in which
+        // narrowing those flips (rank 2) would have anything to narrow, and
+        // that is the precondition to check before attempting a change whose
+        // failure mode is intermittent corruption rather than a crash.
+        // eds_redirty is per-frame and 0 when extended dynamic state is off.
+        XELOGI(
+            "VkOverhead: shmem={:.1f}/fr whole={:.1f} ranged={:.1f} "
+            "ranged_MB={:.2f} | eds_redirty={:.1f}/fr binds={:.1f}",
+            (s.shmem_barriers_whole + s.shmem_barriers_ranged) / f,
+            s.shmem_barriers_whole / f, s.shmem_barriers_ranged / f,
+            s.shmem_barrier_ranged_bytes / f / (1024.0 * 1024.0),
+            s.eds_redirty_events / f, s.eds_redirty_binds / f);
       }
       // Reset outside the cvar check so the counters always mean "since the
       // last report", whether or not the lines above were printed.
@@ -3798,6 +3813,22 @@ void VulkanCommandProcessor::BindExternalGraphicsPipeline(
   dynamic_color_blend_enable_update_needed_ = true;
   dynamic_color_blend_equation_update_needed_ = true;
   dynamic_color_write_mask_update_needed_ = true;
+  // Attribution only (see docs/x360-arch-emulation-study.md, Rank 4): count how
+  // often an external pipeline bind invalidates the guest draw's dynamic EDS
+  // state, and how many distinct binds did it. A high events:binds ratio means
+  // the per-transfer re-emit is frequent enough to be worth attacking.
+  //
+  // Guarded on the same capability UpdateDynamicState gates its emission on, so
+  // these read 0/0 exactly when the re-dirty above is inert -- "nothing
+  // happened", not "nothing to do". Queried off the pipeline cache rather than
+  // a local, since UpdateDynamicState's eds_caps is out of scope here.
+  if (pipeline_cache_ &&
+      pipeline_cache_->dynamic_state_capabilities().extended_dynamic_state) {
+    ++vk_frame_sync_stats_.eds_redirty_events;
+    if (current_external_graphics_pipeline_ != pipeline) {
+      ++vk_frame_sync_stats_.eds_redirty_binds;
+    }
+  }
   if (current_external_graphics_pipeline_ == pipeline) {
     return;
   }

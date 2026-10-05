@@ -708,6 +708,24 @@ class VulkanCommandProcessor final : public CommandProcessor {
     uint64_t primary_buffer_splits = 0;
     uint64_t rb_uma_direct = 0;
     uint64_t rb_uma_first_use = 0;
+    // Shared-memory barrier traffic, reported by VulkanSharedMemory::Use.
+    // whole is the VK_WHOLE_SIZE case (a usage flip, so the previous extent is
+    // unknowable and the barrier must cover the whole 512 MB buffer); ranged is
+    // the same-usage commit of a known written range. A high whole:ratio means
+    // Rank 2 of docs/x360-arch-emulation-study.md -- carrying a conservative
+    // dirty range across usage flips -- would actually narrow something.
+    uint64_t shmem_barriers_whole = 0;
+    uint64_t shmem_barriers_ranged = 0;
+    // Bytes covered by shmem_barriers_ranged, so "how many" can be read next to
+    // "how much": a frame with few but enormous ranged barriers looks different
+    // from one with many small ones.
+    uint64_t shmem_barrier_ranged_bytes = 0;
+    // EDS dirty-flag re-emissions forced by an external (transfer/resolve)
+    // pipeline bind, and how many distinct such binds caused them. 0/0 when
+    // extended dynamic state is unsupported, in which case the re-dirty is
+    // inert and the counters are meaningless rather than alarming.
+    uint64_t eds_redirty_events = 0;
+    uint64_t eds_redirty_binds = 0;
     uint64_t last_report_ns = 0;
   };
   VkFrameSyncStats vk_frame_sync_stats_;

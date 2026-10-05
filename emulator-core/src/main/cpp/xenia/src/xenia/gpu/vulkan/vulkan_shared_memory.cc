@@ -549,7 +549,8 @@ void VulkanSharedMemory::Use(Usage usage,
     GetUsageMasks(last_usage_, src_stage_mask, src_access_mask);
     GetUsageMasks(usage, dst_stage_mask, dst_access_mask);
     VkDeviceSize offset, size;
-    if (last_usage_ == usage) {
+    const bool usage_unchanged = last_usage_ == usage;
+    if (usage_unchanged) {
       // Committing the previous write, while not changing the access mask
       // (passing false as whether to skip the barrier if no masks are changed
       // for this reason).
@@ -561,6 +562,21 @@ void VulkanSharedMemory::Use(Usage usage,
       offset = 0;
       size = VK_WHOLE_SIZE;
       last_usage_ = usage;
+    }
+    // Attribution only, no barrier behaviour depends on this: distinguish the
+    // whole-buffer case from the ranged one, because narrowing the whole-buffer
+    // case across usage flips is the only render-path change this file has ever
+    // been asked to consider (docs/x360-arch-emulation-study.md, Rank 2) and
+    // whether it would narrow anything is not knowable without counting first.
+    // `usage_unchanged` is captured above because last_usage_ has already been
+    // overwritten in the flip branch; re-testing last_usage_ here would read the
+    // new value and could not tell the two cases apart.
+    auto& shmem_stats = command_processor_.vk_frame_sync_stats();
+    if (usage_unchanged) {
+      ++shmem_stats.shmem_barriers_ranged;
+      shmem_stats.shmem_barrier_ranged_bytes += size;
+    } else {
+      ++shmem_stats.shmem_barriers_whole;
     }
     command_processor_.PushBufferMemoryBarrier(
         buffer_, offset, size, src_stage_mask, dst_stage_mask, src_access_mask,
