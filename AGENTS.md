@@ -202,6 +202,31 @@ time**, so a broken image fails in seconds rather than four minutes into a
 native compile. Do not go looking for a C++ error when configure-time SPIR-V
 validation fires.
 
+**Seed the container with the debug keystore, or every build is signed
+differently.** Only `/root/.gradle` is persisted, so unless `/root/.android` is
+also mounted, AGP generates a **fresh** `debug.keystore` on every run and each
+build gets a different signature. `adb install -r` then fails with
+`INSTALL_FAILED_UPDATE_INCOMPATIBLE` even though nothing about the code changed.
+Mount a *copy* so the real keystore is never written to:
+
+```sh
+mkdir -p /tmp/opencode/android-seed
+cp ~/.android/debug.keystore /tmp/opencode/android-seed/
+docker run --rm -v "$PWD":/src -v armx360-gradle-cache:/root/.gradle \
+    -v /tmp/opencode/android-seed:/root/.android armx360-build \
+    ./gradlew :app:assembleDebug
+```
+
+Then compare before installing — it takes a second and catches the whole class:
+
+```sh
+# in the container, which has apksigner:
+apksigner verify --print-certs app/build/outputs/apk/debug/app-debug.apk | grep 'SHA-256 digest'
+```
+
+Verified 2026-10-09: container-generated `b438535d…5752` vs the host keystore's
+`15aa848e…eff79`, which is what the installed `armx360.compose.debug` carries.
+
 Verified 2026-10-04: image builds; `:app:testDebugUnitTest` in the container
 gives **89 tests, 0 failures**; `:emulator-core:configureCMakeRelWithDebInfo`
 succeeds and generates **226** shader bytecode headers.
