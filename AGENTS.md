@@ -423,9 +423,16 @@ The attached device may be the user's real one.
   before the grant will `finish()` on the cached value.
 - An unattended device can have a persistent `NotificationShade` holding
   `mCurrentFocus`; the activity then stays paused with `isOnScreen=false`, no
-  surface is created, `bootOnce()` never runs and **no frame renders**. If a run
-  produces a log with zero `VkPassTime` lines, check window focus before
-  suspecting the emulator.
+  surface is created, `bootOnce()` never runs and **no frame renders**. Check
+  window focus before suspecting the emulator — but **a zero count is not proof
+  of that, or of anything.** `VkPassTime` and `VkFrameSync` are only emitted
+  under `log_gpu_frame_time_breakdown` (`vulkan_command_processor.cc:2271`), so
+  their absence is the default, and reading it as "nothing rendered" produced a
+  wrong conclusion in `docs/x360-arch-emulation-study.md` §5 before review — see
+  that file's §8.1. To tell whether the guest actually presented, read the
+  log-prefix frame counter (`f:`): it is advanced only in the `PM4_XE_SWAP`
+  handler (`pm4_command_processor_implement.h:815`), so a counter that climbs
+  means the guest requested that many frontbuffer swaps.
 
 ---
 

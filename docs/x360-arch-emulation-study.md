@@ -237,39 +237,112 @@ per-transfer work, and it is **not separately instrumented**.
 
 This is the most important section in the document.
 
-**No frame ever rendered on the attached device.** Two runs were attempted:
+**No counter in this document was ever read, and the reason is that every counter
+was switched off — not that nothing ran.** Two sessions were attempted:
 
-1. **This session.** Launched via `am start -n armx360.compose.debug/xendroid.compose.EmulatorHostActivity --es game_uri <SSX iso>`.
+1. **The launch session.** Launched via `am start -n armx360.compose.debug/xendroid.compose.EmulatorHostActivity --es game_uri <SSX iso>`.
    The emulator booted subsystems, initialised Vulkan on the Adreno 740, created a
    2560×1440 swapchain, then **stalled permanently** at
-   `Requesting Android window paint...` (`xendroid_emu.cpp:259`). `xe.log` reached
-   531 lines and stopped. Zero `VkPassTime`, zero `DrawCallBegin`, zero
-   `VkFrameSync`. Screenshot: black surface, `FPS 0`.
+   `Requesting Android window paint...` (`xendroid_emu.cpp:259`), ending
+   `! EMULATOR PAUSED !` / `! EMULATOR RESUMED !`. Screenshot: black surface,
+   `FPS 0`. No content was mounted — every one of its 7 `F>` lines is a
+   `HostPathDevice::ResolvePath` probe, and there is no title in the log.
+   The `xe.log` this paragraph originally cited was 531 lines; it is no longer on
+   the device (rotated away), and the session on the device now has **535** lines
+   with the same shape. **Unverified**: which of the two it was.
 2. **A prior session already on the device** (`logs/session_20261004-170249.zip`,
-   5.7 MB `xe.log`). It got *further* — it extracted `title_id 4541096D` — but
-   ended with **1595 `MemoryPollPark` lines and zero draws**: the guest parked
-   waiting for memory that never arrived, because the same surface/paint condition
-   meant no frame was ever requested.
+   5,759,819 bytes, 85,947 lines). It got *further* — it extracted
+   `title_id 4541096D` and booted the guest kernel — and contains **two** emulator
+   boots (four `VulkanPresenter: Created 2560x1440 swapchain` lines, at
+   `xe.log:397, 1379, 56008, 56985`, two per boot, split by a change of boot
+   thread id at `xe.log:56008`).
 
-This is the **trap documented in `AGENTS.md` §6 (Device safety)**: an unattended
-display holds `mCurrentFocus` in a window that never yields to the emulator, so no
-surface is created, `bootOnce()` never completes, and nothing renders.
-`cmd statusbar collapse` *did* move focus to the app this session
+**What that session actually did — and the correction that matters.** The guest
+**requested frontbuffer swaps continuously**. The log-prefix frame counter reaches
+**22,163** in boot 1 and **10,951** in boot 2, and that counter is advanced in
+exactly one place: `logging::IncrementFrameNumber()` at
+`pm4_command_processor_implement.h:815`, inside the `PM4_XE_SWAP` handler, under
+the comment "Advance the present-frame counter shown in the log prefix" (`:814`).
+`base/logging.cc:87` names it "Present-frame counter, advanced once per guest
+present". So the guest issued ~33,000 frontbuffer swaps across the two boots.
+`VdQueryVideoMode #0..#3: reporting 1280x720` (`xe.log:1559, 1570, 1571, 2098`)
+is guest kernel code running, which corroborates that the title was live.
+
+**Whether any of those presents reached the display is NOT recorded anywhere in
+the log**, and this document does not claim it did. The counters that would have
+said are the ones §6 needs, and they were off — which is the real blocker.
+
+**The zeros this section previously cited were all vacuous.** An earlier draft of
+this file concluded "no frame was ever requested" from four absent log tokens.
+Three of them prove nothing because they were gated off, and one does not exist:
+
+| Cited token | Actually |
+|---|---|
+| `VkPassTime` | Emitted at `vulkan_command_processor.cc:2318`, inside the `if (cvars::log_gpu_frame_time_breakdown)` block opened at `:2271`. That cvar was **`false`** (`xe.log:55626`). Absence is the default. |
+| `VkFrameSync` | `vulkan_command_processor.cc:2280`, same block, same gate. Same. |
+| `DrawCallBegin` | **Not a string this codebase can emit.** `grep -rl DrawCallBegin` over `emulator-core/src/main/cpp/` returns **0 files**. Counting zero of a token that does not exist is not evidence. |
+| `PM4_XE_SWAP` | Emitted only under `debug_markers_enabled()` (`pm4_command_processor_implement.h:805-809`), so its absence is likewise not evidence. |
+
+**The `MemoryPollPark` reading was wrong in kind.** The draft read "1595
+`MemoryPollPark` lines" as the guest parking at runtime waiting for memory that
+never arrived. Those lines are emitted by
+`MemoryPollParkPass::Run` at `memory_poll_park_pass.cc:219` — a **CPU
+translation-time compiler pass**, registered on the translator at
+`ppc_translator.cc:142`. Its text is "parked poll loop at guest `{:08X}`", i.e.
+*this guest instruction loop was compiled with a spin-then-park backoff inserted*.
+1595 of them means 1595 poll loops were **compiled**. It carries no information
+about how long anything waited or whether memory ever arrived. The count itself
+(1595) is correct; the inference drawn from it was not.
+
+**The display-focus condition is real and separately documented**, and is the
+**trap in `AGENTS.md` §6 (Device safety)**: an unattended display holds
+`mCurrentFocus` in a window that never yields to the emulator. `cmd statusbar
+collapse` *did* move focus to the app in that session
 (`mCurrentFocus=Window{5ffdca0 u0 armx360.compose.debug/...EmulatorHostActivity}`),
-but the boot still did not proceed past the paint request, and a synthetic
+but the launch boot still did not proceed past the paint request, and a synthetic
 `KEYCODE_ENTER` did not unblock it. **A physical tap is required; that is a
-physical-world input this environment cannot provide.**
+physical-world input this environment cannot provide.** What must not be done is
+let this explain the *prior* session's numbers — that session was not focus-blocked
+in any way the log records; its counters were simply disabled.
 
 **Therefore: not one performance number in this document is measured.** Per
 `AGENTS.md` §8 this is reported as **blocked, with the reason**. No fps, no
 counter reading, no pass time, and no "this change is X% faster" appears anywhere
 below. The runbook that would produce those numbers is in
-`docs/benchmark-harness.md` and `docs/gpu-pass-count-levers.md` §3; it needs a
-run that actually renders.
+`docs/benchmark-harness.md` and `docs/gpu-pass-count-levers.md` §3. It needs the
+cvars **enabled**, which is a smaller thing to fix than a display tap.
 
-Also void: the prior session's pipeline cache was **cold** — both shader files
-reported `(0 bytes on disk)` and "storage is being reset" — so its timings would
-have been void under trap 1 regardless.
+Cache state, re-derived: boot 1's pipeline cache was **cold** — both files
+`(0 bytes on disk)` with "storage is being reset" (`xe.log:1381-1384`), so boot 1
+would be void under trap 1 regardless. Boot 2's was **warm**, `13938 bytes on
+disk` (`xe.log:56987`), and boot 2 still reached only frame 10,951 — so boot 2's
+shorter run is **not** a cache-warmth artifact.
+
+### 5.2 An unrelated stall that the focus story was masking
+
+Recorded here because it was found while re-deriving the above, and because it is
+a better stall candidate than display focus.
+
+Both boots contain a steady HID hotplug churn — `New controller connected to slot
+0.` / `Controller disconnected from slot 0.` from `hid/input_system.h:137-139` —
+**22,605 lines in boot 1 and 10,192 in boot 2**, roughly two per guest frame
+throughout, and it is what the log ends on (`xe.log:85947`). Per thread it is not
+random: Main XThread (`F8000008`) does 28,510 connects and no disconnects, while
+`F8000170` does 22,604 disconnects and `F800016C` does 10,191. Two pollers
+disagreeing about slot 0, not a device flapping. It is present in the warm-cache
+boot too, so it is not a cold-start artifact.
+
+`GuestScheduler: no guest frame presented in 2000 watchdog ticks while the
+dispatch threads keep switching` fires **9 times** — 6 in boot 1 (`xe.log:1661,
+24210, 50843, 51359, 51633, 55339`) and 3 in boot 2 (`xe.log:57579, 81112,
+83086`) — each dump showing every fiber blocked on a semaphore nobody signals,
+with Main XThread spinning.
+
+**Not established**: that the churn *causes* the watchdog stalls. Mechanism and
+correlation exist; causation does not, and no run has tested it.
+`log_input_poll_breakdown` (`8ecdfcdef`) is the instrumentation for it: it reports
+which flags value each guest poll arrives with, and a bucket where `err == polls`
+names the flag value being answered as "not connected" every time.
 
 ### 5.1 Environment note (affects reproduction, not the analysis)
 
@@ -506,20 +579,30 @@ the claim above is sourced from the study in §2, not from a device run.
 
 ## 7. What would unblock measurement
 
-In priority order — the first item is the only real blocker:
+In priority order. The first item was previously written as "a device run that
+renders", on the strength of §5's now-corrected claim that nothing rendered. That
+was wrong: the guest issued ~33,000 frontbuffer swaps (§5), so the display was
+not the first-order blocker — **the cvars being off was.** Reordered accordingly:
 
-1. **A device run that renders.** The unattended-display limitation in §5 is the
-   single thing standing between this document and real numbers. A physical tap
-   during boot, or a display that yields focus, unblocks everything else.
-2. Then `log_gpu_frame_time_breakdown` **and** `log_gpu_pass_break_reasons` in a
-   per-game config. They cost nothing and yield `VkPassSplit`'s in-pass vs
-   inter-pass split — the measurement that decides whether Rank 1 or Rank 2 is
-   the bigger fish. Per `AGENTS.md` §6 trap 10, **never read an fps number off
-   such a run**: it issues `vkCmdCopyQueryPoolResults(..., VK_QUERY_RESULT_WAIT_BIT)`
-   every submission and stalls the queue.
+1. **A build that has the instrumentation, and the cvars enabled.**
+   `log_gpu_frame_time_breakdown`, `log_gpu_pass_break_reasons` and
+   `log_present_path_cost` must all exist in the *installed* build — see trap 9,
+   verified 2026-10-08 against `armx360.compose.debug`: the installed `libe.so`
+   contains **0** occurrences of `log_present_path_cost`, `VkPresentCost` or
+   `VkOverhead`, while the local `app-debug.apk` contains all three. A run
+   against the installed build produces no data and no complaint.
+2. **A physical tap during boot, or a display that yields focus.** This is still
+   required — §5's display-focus condition is real and is the trap in
+   `AGENTS.md` §6 — but it is second, not first.
 3. `store_shaders` warm, verified via `Shader storage: pipeline file … (N bytes on
-   disk)` being non-zero, or the run is void under trap 1.
+   disk)` being non-zero, or the run is void under trap 1. §5 re-derives which of
+   the two boots in the captured session was warm and which was not.
 4. Two runs, keeping the second, with `tools/bench-ab.sh preflight` before any A/B.
+
+Per `AGENTS.md` §6 trap 10, **never read an fps number off a run with
+`log_gpu_frame_time_breakdown` enabled**: it issues
+`vkCmdCopyQueryPoolResults(..., VK_QUERY_RESULT_WAIT_BIT)` every submission and
+stalls the queue. It is a locating tool.
 
 ---
 
@@ -540,7 +623,10 @@ In priority order — the first item is the only real blocker:
   barrier-deferral that was briefly ranked first (§6). It is recorded with its
   reasoning so the same convincing-but-wrong argument is not re-derived from
   "it's only a buffer barrier".
-- **Measurement is blocked**, recorded as blocked rather than papered over.
+- **Measurement is blocked**, recorded as blocked rather than papered over. §5
+  was corrected after review and the blocker is now **identified rather than
+  assumed**: the counters were switched off and the installed build predates the
+  instrumentation, which is first-order; the display tap is second-order.
 
 ### 8.1 Corrections made to this document after review
 
@@ -552,6 +638,32 @@ Recorded per `AGENTS.md` §1 rather than silently fixed:
   wrong; the conclusion it supported was not.
 - The barrier-deferral candidate was **ranked first when this document was
   drafted**, and that ranking was wrong. It is moved to §6 with the reason.
+- **§5's central claim was wrong, and it was the load-bearing one.** The draft
+  said of the 10-04 session that "no frame was ever requested", citing 1595
+  `MemoryPollPark` lines and four absent log tokens. Re-derived: the guest issued
+  **~33,000 frontbuffer swaps** (frame counter to 22,163 and 10,951, advanced
+  only at `pm4_command_processor_implement.h:815`), `VkPassTime` and `VkFrameSync`
+  were gated off by `log_gpu_frame_time_breakdown = false` (`xe.log:55626`),
+  `PM4_XE_SWAP` is behind `debug_markers_enabled()`, and `DrawCallBegin` **is not
+  a string this codebase can emit** (0 files). The `MemoryPollPark` reading was
+  wrong in kind: it is a translation-time compiler pass
+  (`memory_poll_park_pass.cc:219`), so 1595 lines means 1595 loops *compiled*.
+  §5 has been rewritten and §7 reordered, because the blocker this document
+  claims (a display tap) is second-order: the cvars being off was first-order.
+  **What survives unchanged**: no performance number in this document is
+  measured, and nothing below gained a figure.
+- §5 said the prior session's cache was cold. True of **boot 1** only
+  (`xe.log:1381-1384`, both files 0 bytes). Boot 2's pipeline file reports
+  **13938 bytes** (`xe.log:56987`) — warm — and still reached only frame 10,951,
+  so boot 2's shorter run is not a cache-warmth artifact.
+- §5 cited the launch session's log as 531 lines. That log is no longer on the
+  device; the session there now has **535** lines with the same shape. **Which of
+  the two it was is unverified**, and is labelled so in §5.
+- An earlier commit body (`4cf30a60f`) repeated the "no frame rendered on the
+  attached device" wording. The *conclusion* in it — that neither `VkOverhead`
+  nor `VkPresentCost` has ever printed a line — is correct; the stated reason was
+  not. The correct reason is trap 9: the instrumentation is not in the installed
+  build.
 
 Per `AGENTS.md` §4 ("prefer recording a negative result over shipping an
 unmeasured optimisation"), the correct deliverable here was the study and the
