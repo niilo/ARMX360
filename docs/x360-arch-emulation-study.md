@@ -344,6 +344,29 @@ correlation exist; causation does not, and no run has tested it.
 which flags value each guest poll arrives with, and a bucket where `err == polls`
 names the flag value being answered as "not connected" every time.
 
+**Corroborated across binaries, 2026-10-09.** The churn log lines predate the
+instrumentation, so they appear on an un-instrumented build — which makes this
+checkable on the release package too. SSX on `armx360.compose` (`0f10fd3`, warm
+cache) reached frame 4,541 and produced 4,541 churn lines, with **the same
+structure**: one thread disconnecting exclusively, another connecting
+exclusively. Thread handles differ between boots, which is why they must be read
+as roles rather than as identities.
+
+| build | title | frames | churn | connecting thread | disconnecting thread |
+|---|---|---|---|---|---|
+| debug, 10-04 | SSX | 22,163 | 32,797 | `F8000008` (28,510 / 0 disc) | `F8000170` 22,604, `F800016C` 10,191 |
+| release, 10-09 | SSX | 4,541 | 4,541 | `F8000008` (1,940 / 0 disc) | `F8000168` (4,540) |
+| debug, 10-09 | Gears `4D53082D` | 13,983 | **1** | — | — |
+
+Two consequences. **The churn is title-specific**, not a property of the
+emulator: Gears of War 2 does not exhibit it at all. And **the stall hypothesis
+is refuted** — Gears hit the same `GuestScheduler` watchdog 3× with essentially
+zero churn, so the churn is not necessary for the stalls. Whatever causes them is
+still unknown; do not re-propose the churn as the cause.
+
+The mechanism itself remains **unverified**: no `HidPoll` line has ever been
+emitted, so which flags value is being misread is still unknown.
+
 ### 5.1 Environment note (affects reproduction, not the analysis)
 
 This machine has no JDK, no Android SDK/NDK and no cmake. Build and test
