@@ -11,6 +11,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 
 #include "xenia/hid/input_system.h"
 
@@ -18,6 +19,7 @@
 #include "xenia/hid/hid_flags.h"
 #include "xenia/hid/input_driver.h"
 #include "xenia/kernel/util/shim_utils.h"
+#include "xenia/kernel/xthread.h"
 
 #ifdef XE_PLATFORM_WIN32
 #include "xenia/hid/portal/hardware_portal.h"
@@ -26,7 +28,54 @@
 namespace xe {
 namespace hid {
 
+namespace {
+// True when the caller is executing on a guest XThread rather than the host UI
+// thread. XThread::GetCurrentThread() is null off a guest thread. File-local so
+// xthread.h stays out of input_system.h, which is included very widely.
+bool IsGuestThread() { return kernel::XThread::GetCurrentThread() != nullptr; }
+}  // namespace
+
 DEFINE_bool(vibration, true, "Toggle controller vibration.", "HID");
+
+DEFINE_bool(
+    log_input_poll_breakdown, false,
+    "Report which XamInputGetState flag values the guest polls with, how many "
+    "of those polls are answered, and how much connected-slot churn they "
+    "cause, as one 'HidPoll' line per second. Attribution only - no binding is "
+    "changed, no notification is suppressed, and nothing about the state the "
+    "game sees differs from a run with this off.\n"
+    "WHY THIS EXISTS. UpdateUsedSlot is called from GetStateForUI, i.e. from "
+    "the guest's per-frame query path, so a slot's connected state is decided "
+    "by whether an individual poll matched rather than by whether a device is "
+    "present. GetStateForUI only answers success when "
+    "(flags & driver->GetInputType()) != 0, and InputType::Controller is 1 "
+    "(input_driver.h) while X_INPUT_FLAG_GAMEPAD is 1 (input.h) - they agree "
+    "only by numeric coincidence. Any flag value with bit 0 clear, such as "
+    "X_INPUT_FLAG_ANY_USER (1 << 30), therefore fails that test and reads as "
+    "'disconnected'. Two guest threads polling with different flags then flip "
+    "connected_slots back and forth, and every flip logs and broadcasts "
+    "kXNotificationSystemInputDevicesChanged under the kernel global lock.\n"
+    "A captured session on a Pocket S shows exactly that: 32797 'controller "
+    "connected/disconnected' lines, about two per guest frame across 22163 "
+    "guest presents, with Main XThread doing the connects and two other guest "
+    "threads doing the disconnects. That is the hypothesis this reports on.\n"
+    "READING IT. 'flips' near 2x 'polls' means the slots are thrashing. "
+    "Compare err against polls per flags value: a bucket with err == polls is "
+    "a flag value being answered as 'not connected' every time, which names "
+    "the bug. A bucket that is entirely successful means that caller is not "
+    "part of it. host_polls are counted but not bucketed - they come from the "
+    "host UI loop, are always flags=0x1, and always succeed, so bucketing them "
+    "would bury the guest flags value that is being misread. 'dropped' is "
+    "non-zero when more than 8 distinct (slot, flags) pairs appeared, so the "
+    "per-bucket lines are then incomplete.\n"
+    "CAVEATS. Logging only - nothing about the state the game sees differs from "
+    "a run with this off, and the counters are not even maintained when it is "
+    "off. But do not read an fps number off a run with any log_gpu_* cvar "
+    "enabled (AGENTS.md trap 10). NOT VERIFIED: this cvar has never been run. "
+    "The captured session it is modelled on predates the build that contains it, "
+    "so it has never printed a line and every figure above is inferred from "
+    "that log rather than measured here.",
+    "HID");
 
 DEFINE_double(left_stick_deadzone_percentage, 0.0,
               "Defines deadzone level for left stick. Allowed range [0.0-1.0].",
@@ -86,6 +135,99 @@ void InputSystem::NotifyDevicesChanged() {
   });
 }
 
+void InputSystem::RecordPoll(uint32_t slot, uint32_t flags, bool error,
+                            bool from_guest) {
+  auto& s = poll_stats_;
+  if (!from_guest) {
+    // Host polls (emulator_window.cc's per-frame loop) are counted but not
+    // bucketed: they are always flags=0x1 and always succeed, so bucketing
+    // them would bury the guest flag value that is being misread.
+    s.host_polls++;
+    return;
+  }
+  s.polls++;
+  if (error) {
+    s.errors++;
+  }
+  PollBucket* bucket = nullptr;
+  for (auto& b : s.buckets) {
+    if (b.slot == slot && b.flags == flags) {
+      bucket = &b;
+      break;
+    }
+  }
+  if (!bucket) {
+    for (auto& b : s.buckets) {
+      if (b.slot == 0xFF) {
+        b.slot = static_cast<uint8_t>(slot);
+        b.flags = flags;
+        bucket = &b;
+        break;
+      }
+    }
+  }
+  if (bucket) {
+    bucket->polls++;
+    if (error) {
+      bucket->errors++;
+    }
+  } else {
+    s.dropped++;
+  }
+  LogPollStatsIfDue();
+}
+
+void InputSystem::RecordUsedSlotFlip() {
+  auto* ks = kernel::kernel_state();
+  if (cvars::log_input_poll_breakdown) {
+    auto& s = poll_stats_;
+    s.flips++;
+    if (ks) {
+      s.notifications++;
+    }
+  }
+  // Broadcast unconditionally: this is the behaviour that existed before the
+  // counter was introduced, and the cvar must not change what the guest sees.
+  if (ks) {
+    ks->BroadcastNotification(kXNotificationSystemInputDevicesChanged, 0);
+  }
+}
+
+void InputSystem::LogPollStatsIfDue() {
+  auto& s = poll_stats_;
+  const uint64_t now = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+  if (!s.last_report_ns) {
+    s.last_report_ns = now;
+    return;
+  }
+  if (now - s.last_report_ns < 1000000000ull) {
+    return;
+  }
+  s.last_report_ns = now;
+
+  XELOGI("HidPoll: {} guest polls | err={} | host_polls={} | flips={} | notif={} | "
+         "dropped={}",
+         s.polls, s.errors, s.host_polls, s.flips, s.notifications, s.dropped);
+  for (const auto& b : s.buckets) {
+    if (b.slot == 0xFF) {
+      continue;
+    }
+    XELOGI("HidPoll[{}]: flags=0x{:X} polls={} err={}", b.slot, b.flags, b.polls,
+           b.errors);
+  }
+
+  s.buckets = {};
+  s.polls = 0;
+  s.errors = 0;
+  s.host_polls = 0;
+  s.flips = 0;
+  s.notifications = 0;
+  s.dropped = 0;
+}
+
 void InputSystem::UpdateUsedSlot(InputDriver* driver, uint8_t slot,
                                  bool connected) {
   if (slot == XUserIndexAny) {
@@ -105,10 +247,7 @@ void InputSystem::UpdateUsedSlot(InputDriver* driver, uint8_t slot,
 
   XELOGI(controller_slot_state_change_message[connected].c_str(), slot);
   connected_slots.flip(slot);
-  if (kernel::kernel_state()) {
-    kernel::kernel_state()->BroadcastNotification(
-        kXNotificationSystemInputDevicesChanged, 0);
-  }
+  RecordUsedSlotFlip();
 
   if (driver) {
     X_INPUT_CAPABILITIES capabilities = {};
@@ -177,6 +316,9 @@ X_RESULT InputSystem::GetStateForUI(uint32_t user_index, uint32_t flags,
   if (binding.driver && (flags & binding.driver->GetInputType()) != 0) {
     X_RESULT r = binding.driver->GetState(binding.driver_slot, out_state);
     if (r == X_ERROR_SUCCESS) {
+      if (cvars::log_input_poll_breakdown) {
+        RecordPoll(user_index, flags, false, IsGuestThread());
+      }
       UpdateUsedSlot(binding.driver, user_index, true);
       AdjustDeadzoneLevels(user_index, &out_state->gamepad);
       if (out_state->gamepad.buttons != 0) {
@@ -184,6 +326,9 @@ X_RESULT InputSystem::GetStateForUI(uint32_t user_index, uint32_t flags,
       }
       return r;
     }
+  }
+  if (cvars::log_input_poll_breakdown) {
+    RecordPoll(user_index, flags, true, IsGuestThread());
   }
   UpdateUsedSlot(nullptr, user_index, false);
   return X_ERROR_DEVICE_NOT_CONNECTED;

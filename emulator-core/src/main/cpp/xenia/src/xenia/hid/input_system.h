@@ -150,6 +150,20 @@ class InputSystem {
   // ReconcileBindings reattaches them by stable_id as devices appear.
   void LoadSlotBindingsFromPassthrough();
 
+  // Flip accounting for log_input_poll_breakdown: called from UpdateUsedSlot
+  // once a connected-slot transition has actually been applied, and from
+  // RecordPoll to decide when the once-per-second report is due.
+  void RecordUsedSlotFlip();
+  void LogPollStatsIfDue();
+
+  // Attribution for log_input_poll_breakdown. Records the (slot, flags) pair a
+  // poll arrived with, whether it was answered, and whether it came from a
+  // guest thread. Guest and host polls are separated because the host polls
+  // (emulator_window.cc's per-frame loop) would otherwise dominate the buckets
+  // with flags=0x1 successes and hide the guest flags value being misread.
+  // Called from GetStateForUI; does nothing unless the cvar is on.
+  void RecordPoll(uint32_t slot, uint32_t flags, bool error, bool from_guest);
+
   xe::ui::Window* window_ = nullptr;
 
   std::vector<std::unique_ptr<InputDriver>> drivers_;
@@ -179,6 +193,27 @@ class InputSystem {
   // This prevents button presses used to close UI dialogs from being
   // seen by the game immediately after the dialog closes.
   std::array<uint16_t, XUserMaxUserCount> consumed_buttons_{};
+
+  struct PollBucket {
+    uint32_t flags = 0;
+    uint8_t slot = 0xFF;
+    uint32_t polls = 0;
+    uint32_t errors = 0;
+  };
+  // Bounded so a guest that varies flags per call cannot grow this without
+  // limit; dropped is reported rather than silently folded into a catch-all.
+  static constexpr size_t kMaxPollBuckets = 8;
+  struct PollStats {
+    std::array<PollBucket, kMaxPollBuckets> buckets{};
+    uint32_t polls = 0;
+    uint32_t errors = 0;
+    uint32_t host_polls = 0;
+    uint32_t flips = 0;
+    uint32_t notifications = 0;
+    uint32_t dropped = 0;
+    uint64_t last_report_ns = 0;
+  };
+  PollStats poll_stats_{};
 };
 
 }  // namespace hid
