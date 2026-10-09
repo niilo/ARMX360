@@ -392,8 +392,14 @@ is refuted** — Gears hit the same `GuestScheduler` watchdog 3× with essential
 zero churn, so the churn is not necessary for the stalls. Whatever causes them is
 still unknown; do not re-propose the churn as the cause.
 
-The mechanism itself remains **unverified**: no `HidPoll` line has ever been
-emitted, so which flags value is being misread is still unknown.
+> **Both claims above were corrected on 2026-10-09** once `HidPoll` was finally
+> run. The mechanism is now **measured**: the guilty flags value is `0x8`
+> (`X_INPUT_FLAG_UNKNOWN2`), and `GetStateForUI` fails it because
+> `InputType::Controller` is `1`, so `0x8 & 1 == 0` always
+> (`input_system.cc:316`, `input_driver.h:33`). Gears sends **only `0x1`** — which
+> is why its churn is 1 rather than 32,797. So the **magnitude** is title-specific
+> but the **defect is not**; it is latent in both. Details and the per-title
+> numbers: `HANDOVER-2026-10-09.md` §5e and §3.2a. The stall refutation stands.
 
 ### 5.1 Environment note (affects reproduction, not the analysis)
 
@@ -472,6 +478,27 @@ on a second warm run to satisfy that trap: **`ratio=4.00x` reproduced on all 284
 reports across three boots**, with the Mpx figures identical each time. The ratio is
 structural; frames-per-report is what warms (~30 steady against 27 and 1 cold). No
 fps figure is claimed — `log_gpu_frame_time_breakdown` was off.
+
+**Second title, 2026-10-09: Gears of War 2 (`4D53082D`), two runs.**
+
+| title | reports | ratio | present | guest | max `f:` |
+|---|---|---|---|---|---|
+| SSX | 284 (3 boots) | 4.00x | 3.69 Mpx | 0.92 Mpx | 3,638 |
+| Gears run 1 | 91 | 4.00x | 3.69 Mpx | 0.92 Mpx | 2,714 |
+| Gears run 2 | 100 | 4.00x | 3.69 Mpx | 0.92 Mpx | 2,945 |
+
+**All 475 reports across four boots and two titles read `4.00x`,** byte-identical.
+Gears reports its own guest extent as **1280×720** via `VdQueryVideoMode #0..#3` —
+guest kernel code, so its own view — matching SSX. The overdraw is therefore a
+property of **the emulator's present path on this device** (2560×1440 swapchain
+against a 1280×720 guest), not of any title.
+
+**Caveat, stated because it is easy to over-read:** both titles are
+pixel-identical in the present path (`passes/fr = 1.0`, one quad, same geometry),
+so this agreement is **expected by construction** rather than independent
+corroboration. It rules out a title-specific explanation; it does not establish
+that the present path is the bottleneck, which still needs `VkPassSplit` and is
+still blocked by the gate documented in `HANDOVER-2026-10-09.md` §5f.
 
 That reports pass count and the pixel ratio rather than a time, because **the
 present path is not covered by any existing counter**: `VkPassTime` buckets guest
