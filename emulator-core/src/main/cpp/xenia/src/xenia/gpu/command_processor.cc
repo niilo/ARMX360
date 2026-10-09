@@ -42,6 +42,20 @@ DEFINE_bool(
     "its own, just ones the guest makes or instructs it to make.",
     "GPU");
 
+DEFINE_bool(
+    pin_gpu_thread_to_fast_core, false,
+    "Pins the command processor's worker thread to the fastest cores the "
+    "process is allowed on, as reported by the kernel's per-core capacity. On a "
+    "heterogeneous SoC (big.LITTLE / DynamIQ) this thread currently has no "
+    "affinity at all - it is an XHostThread, so it is excluded by the "
+    "is_guest_thread() guard in XThread::SetActiveCpu - which leaves the Linux "
+    "scheduler free to place the thread the frame waits on beside the emulator's "
+    "other workers. UNVERIFIED BENEFIT: this exists to be measured, not because it "
+    "is known to help. Off by default per AGENTS.md section 4; the measurement "
+    "needed is a two-run A/B with everything else identical. Does nothing on a "
+    "uniform-CPU machine or where the kernel reports no per-core capacity.",
+    "GPU");
+
 DEFINE_uint32(
     gpu_stall_spin_iterations, 32,
     "How many times the command processor polls the ring buffer with a cheap "
@@ -349,6 +363,20 @@ bool CommandProcessor::Initialize() {
           kernel_state_->GetIdleProcess()));
   worker_thread_->set_name("GPU Commands");
   worker_thread_->Create();
+
+  if (cvars::pin_gpu_thread_to_fast_core) {
+    const uint64_t fast_mask = xe::threading::fast_core_mask();
+    if (fast_mask) {
+      worker_thread_->thread()->set_affinity_mask(fast_mask);
+      XELOGI("GPU Commands: pinned to fast cores mask=0x{:X}", fast_mask);
+    } else {
+      // 0 means no opinion, not "core 0" - see fast_core_mask().
+      XELOGI(
+          "GPU Commands: pin_gpu_thread_to_fast_core requested but no fastest "
+          "core could be identified (uniform CPU, or no per-core capacity "
+          "reported). Leaving the thread unpinned.");
+    }
+  }
 
   return true;
 }

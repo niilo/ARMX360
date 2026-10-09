@@ -27,8 +27,11 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <fcntl.h>
 #include <limits>
 #include <memory>
 
@@ -218,6 +221,99 @@ void install_signal_handler(SignalType type) {
 
 // TODO(dougvj)
 void EnableAffinityConfiguration() {}
+
+#if XE_PLATFORM_LINUX || XE_PLATFORM_ANDROID
+namespace {
+
+// Reads a small unsigned integer out of a sysfs node.
+//
+// Plain POSIX I/O on purpose. sysfs reports st_size == 0, so any read that is
+// sized from the stat (rather than to a fixed buffer) returns nothing at all.
+uint32_t ReadSysfsUint(const char* path) {
+  int fd = ::open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) {
+    return 0;
+  }
+  char buffer[32] = {};
+  ssize_t len = ::read(fd, buffer, sizeof(buffer) - 1);
+  ::close(fd);
+  if (len <= 0) {
+    return 0;
+  }
+  buffer[len] = '\0';
+  return uint32_t(std::strtoul(buffer, nullptr, 10));
+}
+
+// Per-core throughput proxy, in preference order.
+//
+// cpu_capacity is the kernel's own normalized capacity and is what every
+// big.LITTLE/DynamIQ SoC exposes. cpuinfo_max_freq is a fallback for kernels
+// that lack it. Both are 0 when absent, which the caller treats as "unknown".
+uint32_t ReadCoreCapacity(uint32_t core) {
+  char path[128];
+  std::snprintf(path, sizeof(path),
+                "/sys/devices/system/cpu/cpu%u/cpu_capacity", core);
+  uint32_t capacity = ReadSysfsUint(path);
+  if (capacity) {
+    return capacity;
+  }
+  std::snprintf(path, sizeof(path),
+                "/sys/devices/system/cpu/cpu%u/cpufreq/cpuinfo_max_freq", core);
+  // Frequencies are in kHz and capacities are dimensionless, so scale them onto
+  // a comparable order of magnitude. Only compared against each other, so the
+  // exact constant does not matter - it only has to not collide with a real
+  // capacity value.
+  uint32_t freq_khz = ReadSysfsUint(path);
+  return freq_khz ? (freq_khz / 1000u) : 0u;
+}
+
+}  // namespace
+#endif
+
+uint64_t fast_core_mask() {
+#if XE_PLATFORM_LINUX || XE_PLATFORM_ANDROID
+  // Only cores this process may actually run on. Android can hand the app a
+  // restricted cpuset, and naming a core outside it makes sched_setaffinity fail
+  // outright rather than degrade.
+  cpu_set_t allowed;
+  CPU_ZERO(&allowed);
+  if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0) {
+    return 0;
+  }
+
+  uint32_t best = 0;
+  uint64_t best_mask = 0;
+  for (uint32_t core = 0; core < logical_processor_count() && core < 64; ++core) {
+    if (!CPU_ISSET(core, &allowed)) {
+      continue;
+    }
+    uint32_t capacity = ReadCoreCapacity(core);
+    if (!capacity) {
+      // At least one core reports nothing, so the set is not comparable. Refuse
+      // to guess rather than rank on partial data.
+      return 0;
+    }
+    if (capacity > best) {
+      best = capacity;
+      best_mask = uint64_t(1) << core;
+    } else if (capacity == best) {
+      best_mask |= uint64_t(1) << core;
+    }
+  }
+
+  // Every core measured the same: a uniform machine. 0 means "no opinion", and
+  // the caller must not collapse it to core 0.
+  uint64_t uniform_mask = 0;
+  for (uint32_t core = 0; core < logical_processor_count() && core < 64; ++core) {
+    if (CPU_ISSET(core, &allowed)) {
+      uniform_mask |= uint64_t(1) << core;
+    }
+  }
+  return best_mask == uniform_mask ? 0 : best_mask;
+#else
+  return 0;
+#endif
+}
 
 // uint64_t ticks() { return mach_absolute_time(); }
 

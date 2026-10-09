@@ -107,6 +107,19 @@ uint32_t logical_processor_count();
 // Must be called at startup before attempting to set thread affinity.
 void EnableAffinityConfiguration();
 
+// Returns a mask of the fastest cores this process is allowed to run on, or 0
+// when there is nothing to choose between.
+//
+// Heterogeneous SoCs (big.LITTLE / DynamIQ) expose a per-core capacity, so the
+// fastest cores are the ones with the highest value. Uniform machines report the
+// same value everywhere and yield 0, which callers must treat as "no opinion"
+// rather than "pin to core 0".
+//
+// Only cores the process is actually allowed on are considered: Android may hand
+// the app a restricted cpuset, and a mask naming a core outside it would fail at
+// sched_setaffinity rather than degrade.
+uint64_t fast_core_mask();
+
 // Gets a stable thread-specific ID, but may not be. Use for informative
 // purposes only.
 uint32_t current_thread_system_id();
