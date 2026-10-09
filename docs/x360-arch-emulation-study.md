@@ -237,8 +237,24 @@ per-transfer work, and it is **not separately instrumented**.
 
 This is the most important section in the document.
 
-**No counter in this document was ever read, and the reason is that every counter
-was switched off — not that nothing ran.** Two sessions were attempted:
+**Status as of 2026-10-09: `VkPresentCost` has now been measured (§12), and the
+reason it could not be read before was a crash in its own log statement, not a
+switched-off cvar.** `vulkan_presenter.cc:2267` formatted a `uint64_t` with a
+`{:.0f}` float specifier, which throws `fmt::format_error`; uncaught on the GPU
+worker thread, that is SIGABRT. So every earlier attempt below failed for two
+compounding reasons — the cvars were off, *and* the one counter that had been
+switched on would have died at its first report. The debug/release asymmetry is
+fully explained: the release build does not contain the throwing line. Full
+symbolized trace in `HANDOVER-2026-10-09.md` §5c.
+
+**Still unmeasured, and not to be conflated with the above:** `VkPassSplit` and
+`VkOverhead`, which decide Rank 1 vs Rank 2, have never printed and **cannot**
+print under the currently recommended cvar set — both are nested inside the
+`log_gpu_frame_time_breakdown` gate (`vulkan_command_processor.cc:2271`).
+`HANDOVER-2026-10-09.md` §5f. So the *attribution* of the 4x is still open even
+though its *existence* is now measured.
+
+The two original attempts:
 
 1. **The launch session.** Launched via `am start -n armx360.compose.debug/xendroid.compose.EmulatorHostActivity --es game_uri <SSX iso>`.
    The emulator booted subsystems, initialised Vulkan on the Adreno 740, created a
@@ -428,15 +444,31 @@ measurement needed to justify turning it on, with `GAME_COMPAT.md` as the
 per-title escape hatch. Whether it wins depends on the panel-to-guest resolution
 ratio, which is a **per-device and per-title** question.
 
-**Its instrumentation has shipped** (`log_present_path_cost`, a `VkPresentCost`
-line in the Vulkan presenter):
+**Its instrumentation has shipped and has now been measured** (`log_present_path_cost`,
+a `VkPresentCost` line in the Vulkan presenter). Measured 2026-10-09, SSX
+(`4541096D`), Pocket S / Android 13 / Adreno 740, 86 consecutive reports agreeing:
 
 ```
-VkPresentCost: 60 frames, 1.0 passes/fr, present=3.69Mpx/fr guest=0.92Mpx/fr \
+VkPresentCost: 30 frames, 1.0 passes/fr, present=3.69Mpx/fr guest=0.92Mpx/fr \
                ratio=4.00x swapchain=2560x1440
 ```
 
-*(format only — not measured)*
+`guest=0.92Mpx` is 1280×720 and `swapchain=2560x1440`, so the **entire 4.00x is the
+present path** — the guest extent is untouched and every extra pixel is ours.
+`passes/fr = 1.0` says it is **one** full-screen quad, so this is a single 4x
+overdraw, not N passes compounding.
+
+**What this does and does not settle.** It confirms §4.1's overdraw claim as a
+measurement rather than an inference, which was the point of the counter. It does
+**not** establish that the present path is the bottleneck: the ratio is a **pixel**
+count, not a time, and `VkPassSplit` — the in-pass vs inter-pass split that would
+decide Rank 1 vs Rank 2 — still has not printed (see §5 and
+`HANDOVER-2026-10-09.md` §5f). Per the code's own comment
+(`vulkan_presenter.cc:1642-1647`) this is a **floor**: it counts pixels, not the
+per-pixel cost of whichever shader the quad runs.
+
+Single run, first build carrying the fix, so the cache was cold (trap 1). The ratio
+is the stable quantity; frames/s is not.
 
 That reports pass count and the pixel ratio rather than a time, because **the
 present path is not covered by any existing counter**: `VkPassTime` buckets guest
@@ -699,6 +731,16 @@ Recorded per `AGENTS.md` §1 rather than silently fixed:
   nor `VkPresentCost` has ever printed a line — is correct; the stated reason was
   not. The correct reason is trap 9: the instrumentation is not in the installed
   build.
+- **§5's "frame 0" was a crash, not an absent present.** A 2026-10-09 re-run on the
+  debug build died with `Fatal signal 6 (SIGABRT)` from an uncaught
+  `fmt::v12::format_error` inside the `VkPresentCost` log statement itself
+  (`vulkan_presenter.cc:2267` formats the `uint64_t` `present_cost_frames_` with a
+  `{:.0f}` float specifier). The `f:` column cannot distinguish the two, because
+  `logging::IncrementFrameNumber()` sits at `pm4_command_processor_implement.h:815`,
+  *after* the `IssueSwap` call at `:811` that threw. The guest **did** present — the
+  report only fires once `present_cost_frames_` is non-zero. Full detail in
+  `HANDOVER-2026-10-09.md` §5c. This also explains the release/debug asymmetry that
+  §5 could not: the release build does not contain the throwing line at all.
 - §5 called the launch session "**stalled permanently**", and
   `HANDOVER-2026-10-09.md` §5 (first draft) called a later debug run "0 swapchains,
   stalls at the surface/paint request". Both were read off the **middle** of logs.
@@ -712,6 +754,15 @@ Recorded per `AGENTS.md` §1 rather than silently fixed:
   error is the same one that produced the §5 claim refuted above: naming a failure
   mode from log tokens that were absent *because the run had not got far enough to
   emit them*.
+- **No measurement below has been taken, and the reason is now specific rather than
+  assumed.** `VkPresentCost` is the Rank 1 number and it could not print on **any**
+  build: the line threw on the debug build, and the release build predates the
+  instrumentation. `VkOverhead` additionally cannot print under the currently
+  recommended cvar set — it is nested inside the
+  `log_gpu_frame_time_breakdown` gate (`vulkan_command_processor.cc:2271`). Both are
+  recorded in `HANDOVER-2026-10-09.md` §5c/§5d. Until a run actually emits them,
+  every ranking in §12 remains a hypothesis with traced code behind it, which is how
+  it is labelled.
 
 Per `AGENTS.md` §4 ("prefer recording a negative result over shipping an
 unmeasured optimisation"), the correct deliverable here was the study and the

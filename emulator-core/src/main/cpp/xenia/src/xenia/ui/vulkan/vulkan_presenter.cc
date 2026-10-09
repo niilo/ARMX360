@@ -2266,8 +2266,16 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
       XELOGI(
           "VkPresentCost: {:.0f} frames, {:.1f} passes/fr, present={:.2f}Mpx/fr "
           "guest={:.2f}Mpx/fr ratio={:.2f}x swapchain={}x{}",
-          present_cost_frames_, static_cast<double>(present_cost_passes_) / f,
-          present_mpx, guest_mpx,
+          // The first argument must be double too, not the raw uint64_t
+          // counter: a {:.0f} presentation type applied to an integer argument
+          // is rejected by fmt and throws format_error, which is uncaught on the
+          // GPU worker thread and takes the process down with SIGABRT. That is
+          // exactly what it did on 2026-10-09, on the first report after a
+          // second of painting -- see docs/HANDOVER-2026-10-09.md section 5c.
+          // Every float specifier below therefore takes an explicitly cast
+          // argument, not a counter.
+          static_cast<double>(present_cost_frames_),
+          static_cast<double>(present_cost_passes_) / f, present_mpx, guest_mpx,
           guest_mpx > 0.0 ? present_mpx / guest_mpx : 0.0,
           paint_context_.swapchain_extent.width,
           paint_context_.swapchain_extent.height);
