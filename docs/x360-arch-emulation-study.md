@@ -250,6 +250,18 @@ was switched off — not that nothing ran.** Two sessions were attempted:
    The `xe.log` this paragraph originally cited was 531 lines; it is no longer on
    the device (rotated away), and the session on the device now has **535** lines
    with the same shape. **Unverified**: which of the two it was.
+
+   **Caveat added 2026-10-09: "stalled permanently" was an inference from the middle
+   of a log, and it is not safe.** The surviving log of this same shape — the
+   2026-10-09 debug SSX run, 2,802 lines — was re-derived and resolves the other
+   way: it creates **two** 2560×1440 swapchains (`xe.log:540`, `xe.log:1517`),
+   completes the whole surface path, and then ends at `uptime_ms=3180` with a clean
+   `Saved 3896821 bytes of VkPipelineCache data` (`xe.log:2772`). Frame 0 at 3.2 s
+   with `308 shader translations needed` still pending (`xe.log:1522`) is a normal
+   cold boot, not a stall. This does **not** prove the 535-line session was also
+   fine — that log is gone and cannot be checked — but it does mean the phrase
+   "stalled permanently" was never earned, and it should not be cited again without
+   a log tail showing where the run ended. See `HANDOVER-2026-10-09.md` §5.
 2. **A prior session already on the device** (`logs/session_20261004-170249.zip`,
    5,759,819 bytes, 85,947 lines). It got *further* — it extracted
    `title_id 4541096D` and booted the guest kernel — and contains **two** emulator
@@ -687,6 +699,19 @@ Recorded per `AGENTS.md` §1 rather than silently fixed:
   nor `VkPresentCost` has ever printed a line — is correct; the stated reason was
   not. The correct reason is trap 9: the instrumentation is not in the installed
   build.
+- §5 called the launch session "**stalled permanently**", and
+  `HANDOVER-2026-10-09.md` §5 (first draft) called a later debug run "0 swapchains,
+  stalls at the surface/paint request". Both were read off the **middle** of logs.
+  Re-derived from the surviving 2026-10-09 debug `xe.log`: it creates **two**
+  2560x1440 swapchains (`xe.log:540`, `xe.log:1517`), completes the surface path,
+  and ends at `uptime_ms=3180` with a clean
+  `Saved 3896821 bytes of VkPipelineCache data` (`xe.log:2772`). Frame 0 at 3.2 s
+  with `308 shader translations needed` pending (`xe.log:1522`) is a cold boot, not
+  a stall. The 535-line launch-session log is gone and cannot be re-derived, so its
+  verdict stays **unverified** — but "permanently" was never earned. The general
+  error is the same one that produced the §5 claim refuted above: naming a failure
+  mode from log tokens that were absent *because the run had not got far enough to
+  emit them*.
 
 Per `AGENTS.md` §4 ("prefer recording a negative result over shipping an
 unmeasured optimisation"), the correct deliverable here was the study and the
