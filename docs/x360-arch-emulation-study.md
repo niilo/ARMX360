@@ -467,8 +467,11 @@ decide Rank 1 vs Rank 2 — still has not printed (see §5 and
 (`vulkan_presenter.cc:1642-1647`) this is a **floor**: it counts pixels, not the
 per-pixel cost of whichever shader the quad runs.
 
-Single run, first build carrying the fix, so the cache was cold (trap 1). The ratio
-is the stable quantity; frames/s is not.
+Single run, first build carrying the fix, so the cache was cold (trap 1). Repeated
+on a second warm run to satisfy that trap: **`ratio=4.00x` reproduced on all 284
+reports across three boots**, with the Mpx figures identical each time. The ratio is
+structural; frames-per-report is what warms (~30 steady against 27 and 1 cold). No
+fps figure is claimed — `log_gpu_frame_time_breakdown` was off.
 
 That reports pass count and the pixel ratio rather than a time, because **the
 present path is not covered by any existing counter**: `VkPassTime` buckets guest
