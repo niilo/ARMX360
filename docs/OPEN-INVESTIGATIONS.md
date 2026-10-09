@@ -18,10 +18,12 @@ Source: Gears of War 2 (`4D53082D`) on the CI-built **release** build
 >   cited below are **successive pulls of that one boot**, not separate runs.
 > - **A fresh launch is the single highest-value next action.** It would finally
 >   exercise `shader_profiling` and settle §5.
-> - Logs live in `/tmp/opencode/armx360-logs/` — **outside the repo, therefore not
->   durable.** Only 4 session zips are retained on device
->   (`shelved_log_sessions = 4`); pull anything wanted before it rotates. Never
->   commit a real `xe.log` (`AGENTS.md` §2).
+> - Logs live in **`logs/session-2026-10-09/`** in the repo — a gitignored
+>   directory, so they are durable on this machine but never committed. They were
+>   originally written to `/tmp/opencode/armx360-logs/`, which is not durable;
+>   that is why the convention changed, and `logs/README.md` documents the
+>   naming and slicing rules. Only 4 session zips are retained on device
+>   (`shelved_log_sessions = 4`), so pull anything wanted before it rotates.
 
 ---
 
@@ -222,8 +224,9 @@ What it will settle: whether the ~1,200-pipeline startup preload is cache hits
   only because the next run produced zero profiling lines and that was treated as
   a puzzle rather than a success. **Verify the config from the device side before
   reporting it changed.**
-- `/tmp/opencode/armx360-logs/` holds today's logs and is **not durable**. Copy
-  anything worth keeping.
+- Logs were being pulled to `/tmp/opencode/armx360-logs/`, which is wiped. They are
+  now in `logs/session-2026-10-09/` (gitignored), with conventions in
+  `logs/README.md`.
 
 **b) Count-matching that does hold**, and is worth keeping:
 

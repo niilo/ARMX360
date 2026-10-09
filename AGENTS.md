@@ -149,6 +149,16 @@ identifier (ADB serial, `u0_aNNN` uid, a real `/home/<user>/` path), leave it ou
 Do not commit a real `xe.log`, an APK, or any file pulled off a device. Logs are
 reconstructed as small synthetic fixtures under `tools/testdata/bench-ab/`.
 
+**Where captured logs go: `logs/`, in this repo, never `/tmp`.** Pull device
+logs to `logs/session-YYYY-MM-DD/` as you collect them, so a measurement session
+survives and a later session can re-derive a finding without re-running
+anything. `/tmp/opencode` is wiped and its logs were being lost there once already
+(2026-10-09). The directory is gitignored — `logs/*` with `!logs/README.md` — so
+nothing captured can be committed by accident, and `logs/README.md` documents the
+naming and slicing conventions. Read it before analysing anything: `xe.log`
+accumulates across launches, a whole-file frame count is meaningless, and
+`logcat` is ~99.7% `InputEventSender` noise.
+
 ---
 
 ## 3. Build and test
@@ -478,6 +488,7 @@ The attached device may be the user's real one.
 | `tools/bench-ab.sh` | on-device A/B harness |
 | `tools/bench-ab-test.sh` | its offline test suite |
 | `tools/testdata/bench-ab/` | synthetic `xe.log` fixtures |
+| `logs/` | captured device logs, **gitignored** — read `logs/README.md` first |
 | `design/` | launcher icon master artwork + the script that installs it |
 | `docs/*.md` | investigation ledgers; read before touching GPU perf |
 | `Dockerfile` | local build container, same base image as CI |

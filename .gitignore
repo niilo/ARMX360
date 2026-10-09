@@ -107,6 +107,20 @@ imgui.ini
 # committed, the suite cannot run and the assertions go untested.
 !tools/testdata/bench-ab/*.log
 
+# Captured device logs live in logs/ and are local working material, never
+# committed (AGENTS.md section 2: never commit a real xe.log or a file pulled off
+# a device - they carry title data and they are large). The *.log rule above
+# already covers the .log files; `logs/*` additionally covers the logcat captures
+# (.txt, which *.log does NOT match).
+#
+# Note the pattern is `logs/*`, not `logs/`: git cannot re-include a file whose
+# parent directory is excluded, so the README exception below would silently not
+# apply if the directory itself were the excluded entry.
+logs/*
+# ...except the README, which documents the capture conventions and is the only
+# reason anyone finds this directory. Everything else under logs/ stays out.
+!logs/README.md
+
 # ==============================================================================
 # Build system output
 # ==============================================================================
