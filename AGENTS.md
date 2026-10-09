@@ -457,7 +457,12 @@ The attached device may be the user's real one.
   that file's §8.1. To tell whether the guest actually presented, read the
   log-prefix frame counter (`f:`): it is advanced only in the `PM4_XE_SWAP`
   handler (`pm4_command_processor_implement.h:815`), so a counter that climbs
-  means the guest requested that many frontbuffer swaps.
+  means the guest requested that many frontbuffer swaps. **But `f:0` does not
+  mean "did not present"**: that increment sits *after* the `IssueSwap` call at
+  `:811`, so a crash between the two is indistinguishable from an absent
+  present. Check logcat for `SIGABRT` before believing a zero — `xe.log` has no
+  crash line, and reading its tail as a stall produced a wrong conclusion in
+  `docs/HANDOVER-2026-10-09.md` §5 twice before review.
 
 ---
 
