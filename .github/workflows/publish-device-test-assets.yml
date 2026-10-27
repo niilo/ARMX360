@@ -1,0 +1,120 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Publish prepared device-test assets
+"on":
+  push:
+    branches: [codex/publish-device-test-assets-20261027]
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: contains(github.event.head_commit.message, '[publish-ready]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Verify, assemble and publish the prepared files
+        shell: bash
+        run: |
+          python3 - <<'ARMX360_ASSEMBLY_PY'
+          import concurrent.futures
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import tempfile
+          
+          REPO = 'niilo/ARMX360'
+          RELEASE_ID = 423028499
+          TAG = 'ARMX360-plus-device-tests-20261025'
+          MANIFEST = 'ARMX360-transfer-manifest.json'
+          PREFIX = 'ARMX360-transfer-20261027.'
+          TOKEN = os.environ['GH_TOKEN']
+          
+          def api(path, method='GET', body=None):
+              command = ['gh', 'api', '--method', method, path]
+              if body is not None:
+                  command += ['--input', '-']
+              result = subprocess.run(command, input=json.dumps(body).encode() if body is not None else None,
+                                      stdout=subprocess.PIPE, check=True)
+              return json.loads(result.stdout) if result.stdout.strip() else None
+          
+          def release():
+              return api(f'repos/{REPO}/releases/{RELEASE_ID}')
+          
+          def sha(path):
+              digest = hashlib.sha256()
+              with path.open('rb') as stream:
+                  for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b''):
+                      digest.update(chunk)
+              return digest.hexdigest()
+          
+          def download(asset_id, target):
+              # Curl strips Authorization when following the signed cross-host redirect.
+              subprocess.run(['curl', '--fail', '--location', '--silent', '--show-error',
+                              '--retry', '2', '--header', '@-', '--header', 'Accept: application/octet-stream',
+                              '--output', str(target),
+                              f'https://api.github.com/repos/{REPO}/releases/assets/{asset_id}'],
+                             input=('Authorization: Bearer ' + TOKEN + '\n').encode(), check=True)
+          
+          state = release()
+          assert state['draft'] and state['prerelease'] and state['tag_name'] == TAG
+          assets = {asset['name']: asset for asset in state['assets']}
+          manifest_asset = assets[MANIFEST]
+          with tempfile.TemporaryDirectory(prefix='armx360-publication-') as directory:
+              root = Path(directory)
+              manifest_path = root / 'manifest.json'
+              download(manifest_asset['id'], manifest_path)
+              manifest = json.loads(manifest_path.read_text())
+              assert manifest['release_id'] == RELEASE_ID and manifest['tag'] == TAG
+              assert manifest['transfer_prefix'] == PREFIX and len(manifest['files']) == 13
+              cleanup = []
+              for item in manifest['files']:
+                  name = item['name']
+                  assert re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', name) and Path(name).name == name
+                  if not item['parts']:
+                      assert assets[name]['digest'] == 'sha256:' + item['sha256'], name
+                      continue
+                  target = root / name
+                  def part_download(part):
+                      remote = assets[part['name']]
+                      assert part['name'].startswith(PREFIX) and remote['id'] == part['id']
+                      assert remote['digest'] == 'sha256:' + part['sha256']
+                      path = root / ('part-' + str(part['id']))
+                      download(part['id'], path)
+                      assert path.stat().st_size == part['size'] and sha(path) == part['sha256']
+                      return path
+                  with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+                      parts = list(pool.map(part_download, item['parts']))
+                  with target.open('wb') as output:
+                      for path in parts:
+                          with path.open('rb') as stream:
+                              while chunk := stream.read(1024 * 1024):
+                                  output.write(chunk)
+                          path.unlink()
+                  assert target.stat().st_size == item['size'] and sha(target) == item['sha256'], name
+                  current = {asset['name']: asset for asset in release()['assets']}
+                  if name in current:
+                      assert current[name]['digest'] == 'sha256:' + item['sha256'], name
+                  else:
+                      subprocess.run(['gh', 'release', 'upload', TAG, '--repo', REPO, str(target)], check=True)
+                  target.unlink()
+                  cleanup.extend(part['id'] for part in item['parts'])
+                  print('Assembled and uploaded:', name, flush=True)
+              final_assets = {asset['name']: asset for asset in release()['assets']}
+              for item in manifest['files']:
+                  remote = final_assets[item['name']]
+                  assert remote['state'] == 'uploaded' and remote['size'] == item['size']
+                  assert remote['digest'] == 'sha256:' + item['sha256'], item['name']
+              print('All 13 final files have the expected SHA-256 digests.', flush=True)
+              for asset_id in cleanup + [manifest_asset['id']]:
+                  api(f'repos/{REPO}/releases/assets/{asset_id}', method='DELETE')
+              published = api(f'repos/{REPO}/releases/{RELEASE_ID}', method='PATCH',
+                              body={'draft': False, 'prerelease': True, 'make_latest': 'false'})
+              assert not published['draft'] and published['prerelease']
+              print('Published:', published['html_url'], flush=True)
+              for asset in published['assets']:
+                  print(asset['name'], asset['browser_download_url'], flush=True)
+          ARMX360_ASSEMBLY_PY
