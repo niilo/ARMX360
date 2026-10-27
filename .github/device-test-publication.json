@@ -1,0 +1,73 @@
+{
+  "release_id": 423028499,
+  "tag": "ARMX360-plus-device-tests-20261025",
+  "manifest_asset_id": 682818921,
+  "manifest_sha256": "1ddec3a33f42907457b8fac1cbe5b8c5ef92ca8168c19b70b7e8e8ab0c5881e2",
+  "files": [
+    {
+      "name": "ARMX360-00-baseline.apk",
+      "size": 42508863,
+      "sha256": "7c468a272fe8c6889e93be256fa9986d59a9a67e7071fdc9e5db22c1aae6f46e"
+    },
+    {
+      "name": "ARMX360-01-core.apk",
+      "size": 42525545,
+      "sha256": "b1715b0838a36a6d2851c58c76de23ce12a936a775be30dacad5ae7ffbef884b"
+    },
+    {
+      "name": "ARMX360-02-render.apk",
+      "size": 42528681,
+      "sha256": "f5caabc1f27269920fa7af69caacf54fa1ff6f9f1afb53027f82520a938aa9b8"
+    },
+    {
+      "name": "ARMX360-03-jit.apk",
+      "size": 50919021,
+      "sha256": "e9b17298215150b27bf2d11836ec1017c18431aad4cf648641e8003fc16955a2"
+    },
+    {
+      "name": "ARMX360-04-shaders.apk",
+      "size": 42558164,
+      "sha256": "97ca9be9cad484d2f81620063b93c1fb12eae29052556ee6eeed3a74915718ae"
+    },
+    {
+      "name": "ARMX360-05-descriptors.apk",
+      "size": 42560188,
+      "sha256": "c4301493089fc0415a9ec44da47596216cc5927bc3c601da6883e4735a8543b1"
+    },
+    {
+      "name": "ARMX360-device-test-APKs.zip",
+      "size": 263655330,
+      "sha256": "f10cd86b3036bdfcb052c87021613a06c8522b7342275b01a1f59ba394ab6c0f"
+    },
+    {
+      "name": "ARMX360-corresponding-source.zip",
+      "size": 315698971,
+      "sha256": "edc6c2db5c8a7ef4ee61177c555e73bc9d9d451239a0b1692e1117fa4857a5ad"
+    },
+    {
+      "name": "SHA256SUMS",
+      "size": 1603,
+      "sha256": "fbf05cba51aa2c138f7ae1117404e8103a7e4b2d3e45ea727d93a476727fa3f9"
+    },
+    {
+      "name": "BUILD-MANIFEST.json",
+      "size": 5243,
+      "sha256": "1d15532dbf2032c5080e24035938c71fb01cd599f9d6fc5cc360f50c05277e32"
+    },
+    {
+      "name": "LICENSE",
+      "size": 34523,
+      "sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0"
+    },
+    {
+      "name": "THIRD-PARTY-NOTICES.md",
+      "size": 3341,
+      "sha256": "b85e498f986400696243958582045afe4edd7efbe71dbab42a82898dc3f69840"
+    },
+    {
+      "name": "TESTING-GUIDE.md",
+      "size": 11267,
+      "sha256": "b768265f86adc3af9675887afe883b39802792d02c10da50c38ed3d6cb4023c9"
+    }
+  ]
+}

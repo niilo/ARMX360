@@ -25,6 +25,7 @@ jobs:
           import re
           import subprocess
           import tempfile
+          import time
           
           REPO = 'niilo/ARMX360'
           RELEASE_ID = 423028499
@@ -111,6 +112,7 @@ jobs:
               print('All 13 final files have the expected SHA-256 digests.', flush=True)
               for asset_id in cleanup + [manifest_asset['id']]:
                   api(f'repos/{REPO}/releases/assets/{asset_id}', method='DELETE')
+                  time.sleep(0.3)  # Keep cleanup below GitHub's secondary API point limits.
               published = api(f'repos/{REPO}/releases/{RELEASE_ID}', method='PATCH',
                               body={'draft': False, 'prerelease': True, 'make_latest': 'false'})
               assert not published['draft'] and published['prerelease']
